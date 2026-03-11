@@ -1,0 +1,240 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Poker Analytics Report</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #ffffff;
+            color: #333;
+            line-height: 1.5;
+            margin: 0;
+            padding: 40px;
+        }
+        .container {
+            max-width: 1100px;
+            margin: 0 auto;
+        }
+        h1 {
+            font-size: 24px;
+            font-weight: 600;
+            border-bottom: 2px solid #eee;
+            padding-bottom: 10px;
+            margin-bottom: 30px;
+        }
+        h2 {
+            font-size: 18px;
+            font-weight: 500;
+            margin-top: 40px;
+            margin-bottom: 20px;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .chart-container {
+            position: relative;
+            margin-bottom: 40px;
+            background: #fff;
+            padding: 20px;
+            border: 1px solid #efefef;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+            font-size: 14px;
+        }
+        th, td {
+            text-align: left;
+            padding: 12px 8px;
+            border-bottom: 1px solid #eee;
+        }
+        th {
+            background-color: #f9f9f9;
+            font-weight: 600;
+        }
+        tr:hover {
+            background-color: #fcfcfc;
+        }
+        .winner-cell {
+            font-weight: 600;
+            color: #2c7be5;
+        }
+        .summary-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 20px;
+            margin-bottom: 40px;
+        }
+        .summary-card {
+            border: 1px solid #eee;
+            padding: 20px;
+            text-align: center;
+        }
+        .summary-card .label {
+            font-size: 12px;
+            color: #999;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+        }
+        .summary-card .value {
+            font-size: 24px;
+            font-weight: 700;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Poker Performance Analysis</h1>
+        
+        <div class="summary-grid">
+            <div class="summary-card">
+                <div class="label">Total Hands</div>
+                <div class="value" id="stat-hands">0</div>
+            </div>
+            <div class="summary-card">
+                <div class="label">Average Pot Size</div>
+                <div class="value" id="stat-avg-pot">$0</div>
+            </div>
+            <div class="summary-card">
+                <div class="label">Total Hands Witnessed</div>
+                <div class="value" id="stat-total-volume">0</div>
+            </div>
+        </div>
+
+        <h2>Stack Size Progression</h2>
+        <div class="chart-container">
+            <canvas id="stackChart"></canvas>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 40px;">
+            <div>
+                <h2>Win Count by Player</h2>
+                <div class="chart-container">
+                    <canvas id="winChart"></canvas>
+                </div>
+            </div>
+            <div>
+                <h2>Hand Strength Frequency</h2>
+                <div class="chart-container">
+                    <canvas id="strengthChart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <h2>Detailed Game Logs</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Timestamp</th>
+                    <th>Final Pot</th>
+                    <th>Winner</th>
+                    <th>Hand Description</th>
+                    <th>Tokens Won</th>
+                </tr>
+            </thead>
+            <tbody id="table-body"></tbody>
+        </table>
+    </div>
+
+    <script>
+        const raw = {"win_rates": [{"pid": 0, "wins": 14}, {"pid": 1, "wins": 12}, {"pid": 2, "wins": 9}, {"pid": 3, "wins": 6}], "stack_history": [{"hand": 1, "pid": 0, "chips": 980}, {"hand": 1, "pid": 1, "chips": 970}, {"hand": 1, "pid": 2, "chips": 960}, {"hand": 1, "pid": 3, "chips": 980}, {"hand": 2, "pid": 0, "chips": 1010}, {"hand": 2, "pid": 1, "chips": 890}, {"hand": 2, "pid": 2, "chips": 870}, {"hand": 2, "pid": 3, "chips": 960}, {"hand": 3, "pid": 0, "chips": 970}, {"hand": 3, "pid": 1, "chips": 1140}, {"hand": 3, "pid": 2, "chips": 850}, {"hand": 3, "pid": 3, "chips": 930}, {"hand": 4, "pid": 0, "chips": 920}, {"hand": 4, "pid": 1, "chips": 1080}, {"hand": 4, "pid": 2, "chips": 940}, {"hand": 4, "pid": 3, "chips": 890}, {"hand": 5, "pid": 0, "chips": 900}, {"hand": 5, "pid": 1, "chips": 1220}, {"hand": 5, "pid": 2, "chips": 900}, {"hand": 5, "pid": 3, "chips": 870}, {"hand": 6, "pid": 0, "chips": 880}, {"hand": 6, "pid": 1, "chips": 1200}, {"hand": 6, "pid": 2, "chips": 870}, {"hand": 6, "pid": 3, "chips": 940}, {"hand": 7, "pid": 0, "chips": 820}, {"hand": 7, "pid": 1, "chips": 1160}, {"hand": 7, "pid": 2, "chips": 830}, {"hand": 7, "pid": 3, "chips": 1040}, {"hand": 8, "pid": 0, "chips": 730}, {"hand": 8, "pid": 1, "chips": 1060}, {"hand": 8, "pid": 2, "chips": 900}, {"hand": 8, "pid": 3, "chips": 960}, {"hand": 9, "pid": 0, "chips": 690}, {"hand": 9, "pid": 1, "chips": 1360}, {"hand": 9, "pid": 2, "chips": 840}, {"hand": 9, "pid": 3, "chips": 920}, {"hand": 10, "pid": 0, "chips": 860}, {"hand": 10, "pid": 1, "chips": 1280}, {"hand": 10, "pid": 2, "chips": 750}, {"hand": 10, "pid": 3, "chips": 820}, {"hand": 11, "pid": 0, "chips": 840}, {"hand": 11, "pid": 1, "chips": 1550}, {"hand": 11, "pid": 2, "chips": 750}, {"hand": 11, "pid": 3, "chips": 790}, {"hand": 12, "pid": 0, "chips": 790}, {"hand": 12, "pid": 1, "chips": 1490}, {"hand": 12, "pid": 2, "chips": 750}, {"hand": 12, "pid": 3, "chips": 820}, {"hand": 13, "pid": 0, "chips": 710}, {"hand": 13, "pid": 1, "chips": 1550}, {"hand": 13, "pid": 2, "chips": 730}, {"hand": 13, "pid": 3, "chips": 740}, {"hand": 14, "pid": 0, "chips": 960}, {"hand": 14, "pid": 1, "chips": 1530}, {"hand": 14, "pid": 2, "chips": 720}, {"hand": 14, "pid": 3, "chips": 700}, {"hand": 15, "pid": 0, "chips": 900}, {"hand": 15, "pid": 1, "chips": 1620}, {"hand": 15, "pid": 2, "chips": 700}, {"hand": 15, "pid": 3, "chips": 650}, {"hand": 16, "pid": 0, "chips": 980}, {"hand": 16, "pid": 1, "chips": 1560}, {"hand": 16, "pid": 2, "chips": 700}, {"hand": 16, "pid": 3, "chips": 610}, {"hand": 17, "pid": 0, "chips": 660}, {"hand": 17, "pid": 1, "chips": 1550}, {"hand": 17, "pid": 2, "chips": 680}, {"hand": 17, "pid": 3, "chips": 440}, {"hand": 18, "pid": 0, "chips": 1310}, {"hand": 18, "pid": 1, "chips": 1530}, {"hand": 18, "pid": 2, "chips": 670}, {"hand": 18, "pid": 3, "chips": 400}, {"hand": 19, "pid": 0, "chips": 1360}, {"hand": 19, "pid": 1, "chips": 1510}, {"hand": 19, "pid": 2, "chips": 650}, {"hand": 19, "pid": 3, "chips": 370}, {"hand": 20, "pid": 0, "chips": 1330}, {"hand": 20, "pid": 1, "chips": 1470}, {"hand": 20, "pid": 2, "chips": 740}, {"hand": 20, "pid": 3, "chips": 370}, {"hand": 21, "pid": 0, "chips": 1250}, {"hand": 21, "pid": 1, "chips": 1380}, {"hand": 21, "pid": 2, "chips": 730}, {"hand": 21, "pid": 3, "chips": 290}, {"hand": 22, "pid": 0, "chips": 1580}, {"hand": 22, "pid": 1, "chips": 1360}, {"hand": 22, "pid": 2, "chips": 720}, {"hand": 22, "pid": 3, "chips": 250}, {"hand": 23, "pid": 0, "chips": 1540}, {"hand": 23, "pid": 1, "chips": 1450}, {"hand": 23, "pid": 2, "chips": 700}, {"hand": 23, "pid": 3, "chips": 220}, {"hand": 24, "pid": 0, "chips": 1530}, {"hand": 24, "pid": 1, "chips": 1430}, {"hand": 24, "pid": 2, "chips": 770}, {"hand": 24, "pid": 3, "chips": 200}, {"hand": 25, "pid": 0, "chips": 1490}, {"hand": 25, "pid": 1, "chips": 1420}, {"hand": 25, "pid": 2, "chips": 710}, {"hand": 25, "pid": 3, "chips": 250}, {"hand": 26, "pid": 0, "chips": 1600}, {"hand": 26, "pid": 1, "chips": 1420}, {"hand": 26, "pid": 2, "chips": 680}, {"hand": 26, "pid": 3, "chips": 210}, {"hand": 27, "pid": 0, "chips": 1560}, {"hand": 27, "pid": 1, "chips": 1400}, {"hand": 27, "pid": 2, "chips": 750}, {"hand": 27, "pid": 3, "chips": 180}, {"hand": 28, "pid": 0, "chips": 1470}, {"hand": 28, "pid": 1, "chips": 1410}, {"hand": 28, "pid": 2, "chips": 670}, {"hand": 28, "pid": 3, "chips": 100}, {"hand": 29, "pid": 0, "chips": 1780}, {"hand": 29, "pid": 1, "chips": 1380}, {"hand": 29, "pid": 2, "chips": 610}, {"hand": 29, "pid": 3, "chips": 60}, {"hand": 30, "pid": 0, "chips": 1740}, {"hand": 30, "pid": 1, "chips": 1340}, {"hand": 30, "pid": 2, "chips": 600}, {"hand": 30, "pid": 3, "chips": 170}, {"hand": 31, "pid": 0, "chips": 1400}, {"hand": 31, "pid": 1, "chips": 1170}, {"hand": 31, "pid": 2, "chips": 440}, {"hand": 31, "pid": 3, "chips": 120}, {"hand": 32, "pid": 0, "chips": 1390}, {"hand": 32, "pid": 1, "chips": 1940}, {"hand": 32, "pid": 2, "chips": 360}, {"hand": 32, "pid": 3, "chips": 80}, {"hand": 33, "pid": 0, "chips": 1370}, {"hand": 33, "pid": 1, "chips": 1930}, {"hand": 33, "pid": 2, "chips": 570}, {"hand": 33, "pid": 3, "chips": 60}, {"hand": 34, "pid": 0, "chips": 1420}, {"hand": 34, "pid": 1, "chips": 1910}, {"hand": 34, "pid": 2, "chips": 540}, {"hand": 34, "pid": 3, "chips": 40}, {"hand": 35, "pid": 0, "chips": 1360}, {"hand": 35, "pid": 1, "chips": 1870}, {"hand": 35, "pid": 2, "chips": 590}, {"hand": 35, "pid": 3, "chips": 30}, {"hand": 36, "pid": 0, "chips": 1330}, {"hand": 36, "pid": 1, "chips": 1980}, {"hand": 36, "pid": 2, "chips": 570}, {"hand": 36, "pid": 3, "chips": 30}, {"hand": 37, "pid": 0, "chips": 1400}, {"hand": 37, "pid": 1, "chips": 1950}, {"hand": 37, "pid": 2, "chips": 550}, {"hand": 37, "pid": 3, "chips": 30}, {"hand": 38, "pid": 0, "chips": 1450}, {"hand": 38, "pid": 1, "chips": 1930}, {"hand": 38, "pid": 2, "chips": 520}, {"hand": 38, "pid": 3, "chips": 10}, {"hand": 39, "pid": 0, "chips": 1390}, {"hand": 39, "pid": 1, "chips": 1930}, {"hand": 39, "pid": 2, "chips": 570}, {"hand": 39, "pid": 3, "chips": 0}, {"hand": 40, "pid": 0, "chips": 1480}, {"hand": 40, "pid": 1, "chips": 1920}, {"hand": 40, "pid": 2, "chips": 550}, {"hand": 41, "pid": 0, "chips": 1490}, {"hand": 41, "pid": 1, "chips": 1900}, {"hand": 41, "pid": 2, "chips": 520}, {"hand": 42, "pid": 0, "chips": 1480}, {"hand": 42, "pid": 1, "chips": 1970}, {"hand": 42, "pid": 2, "chips": 480}], "table": [{"id": 42, "time": "2026-03-11 13:43:11.544692", "pot": 70, "winner": null, "hand": null, "gain": null}, {"id": 41, "time": "2026-03-11 13:43:07.230023", "pot": 90, "winner": 1, "hand": "Two Pair", "gain": 90}, {"id": 40, "time": "2026-03-11 13:43:04.686053", "pot": 50, "winner": 0, "hand": "everyone_folded", "gain": 50}, {"id": 39, "time": "2026-03-11 13:42:59.743579", "pot": 110, "winner": 0, "hand": "One Pair", "gain": 110}, {"id": 38, "time": "2026-03-11 13:42:55.709736", "pot": 90, "winner": 2, "hand": "Two Pair", "gain": 90}, {"id": 37, "time": "2026-03-11 13:42:52.416460", "pot": 70, "winner": 0, "hand": "One Pair", "gain": 70}, {"id": 36, "time": "2026-03-11 13:42:48.612442", "pot": 90, "winner": 0, "hand": "Three of a Kind", "gain": 90}, {"id": 35, "time": "2026-03-11 13:42:43.139591", "pot": 150, "winner": 1, "hand": "Two Pair", "gain": 150}, {"id": 34, "time": "2026-03-11 13:42:38.029695", "pot": 90, "winner": 2, "hand": "One Pair", "gain": 90}, {"id": 33, "time": "2026-03-11 13:42:34.704285", "pot": 70, "winner": 0, "hand": "One Pair", "gain": 70}, {"id": 32, "time": "2026-03-11 13:42:30.560324", "pot": 230, "winner": 2, "hand": "One Pair", "gain": 230}, {"id": 31, "time": "2026-03-11 13:42:25.510793", "pot": 870, "winner": 1, "hand": "Straight", "gain": 870}, {"id": 30, "time": "2026-03-11 13:42:21.109173", "pot": 150, "winner": 1, "hand": "Two Pair", "gain": 150}, {"id": 29, "time": "2026-03-11 13:42:15.129845", "pot": 170, "winner": 3, "hand": "One Pair", "gain": 170}, {"id": 28, "time": "2026-03-11 13:42:09.803685", "pot": 350, "winner": 0, "hand": "Flush", "gain": 350}, {"id": 27, "time": "2026-03-11 13:42:04.162491", "pot": 110, "winner": 1, "hand": "One Pair", "gain": 110}, {"id": 26, "time": "2026-03-11 13:42:00.261834", "pot": 90, "winner": 2, "hand": "Three of a Kind", "gain": 90}, {"id": 25, "time": "2026-03-11 13:41:56.580198", "pot": 130, "winner": 0, "hand": "Two Pair", "gain": 130}, {"id": 24, "time": "2026-03-11 13:41:53.700302", "pot": 70, "winner": 3, "hand": "One Pair", "gain": 70}, {"id": 23, "time": "2026-03-11 13:41:50.460343", "pot": 90, "winner": 2, "hand": "Two Pair", "gain": 90}, {"id": 22, "time": "2026-03-11 13:41:47.703605", "pot": 90, "winner": 1, "hand": "Two Pair", "gain": 90}, {"id": 21, "time": "2026-03-11 13:41:44.501367", "pot": 350, "winner": 0, "hand": "One Pair", "gain": 350}, {"id": 20, "time": "2026-03-11 13:41:41.920102", "pot": 90, "winner": 2, "hand": "Straight", "gain": 90}, {"id": 19, "time": "2026-03-11 13:41:39.075990", "pot": 110, "winner": 2, "hand": "Flush", "gain": 110}, {"id": 18, "time": "2026-03-11 13:41:36.545512", "pot": 90, "winner": 0, "hand": "One Pair", "gain": 90}, {"id": 17, "time": "2026-03-11 13:41:33.982848", "pot": 670, "winner": 0, "hand": "One Pair", "gain": 670}, {"id": 16, "time": "2026-03-11 13:41:31.180038", "pot": 150, "winner": 3, "hand": "One Pair", "gain": 150}, {"id": 15, "time": "2026-03-11 13:41:28.532999", "pot": 130, "winner": 0, "hand": "One Pair", "gain": 130}, {"id": 14, "time": "2026-03-11 13:41:25.755547", "pot": 90, "winner": 1, "hand": "One Pair", "gain": 90}, {"id": 13, "time": "2026-03-11 13:41:22.775447", "pot": 270, "winner": 0, "hand": "Two Pair", "gain": 270}, {"id": 12, "time": "2026-03-11 13:41:19.875412", "pot": 150, "winner": 1, "hand": "Two Pair", "gain": 150}, {"id": 11, "time": "2026-03-11 13:41:17.495753", "pot": 70, "winner": 3, "hand": "Flush", "gain": 70}, {"id": 10, "time": "2026-03-11 13:41:14.551309", "pot": 290, "winner": 1, "hand": "Two Pair", "gain": 290}, {"id": 9, "time": "2026-03-11 13:41:11.501450", "pot": 190, "winner": 0, "hand": "Three of a Kind", "gain": 190}, {"id": 8, "time": "2026-03-11 13:41:08.622004", "pot": 350, "winner": 1, "hand": "Straight", "gain": 350}, {"id": 7, "time": "2026-03-11 13:41:06.160248", "pot": 150, "winner": 2, "hand": "Two Pair", "gain": 150}, {"id": 6, "time": "2026-03-11 13:41:03.375589", "pot": 110, "winner": 3, "hand": "One Pair", "gain": 110}, {"id": 5, "time": "2026-03-11 13:41:00.763669", "pot": 110, "winner": 3, "hand": "Flush", "gain": 110}, {"id": 4, "time": "2026-03-11 13:40:58.201057", "pot": 170, "winner": 1, "hand": "One Pair", "gain": 170}, {"id": 3, "time": "2026-03-11 13:40:56.194037", "pot": 110, "winner": 2, "hand": "Two Pair", "gain": 110}, {"id": 2, "time": "2026-03-11 13:40:53.756343", "pot": 270, "winner": 1, "hand": "Two Pair", "gain": 270}, {"id": 1, "time": "2026-03-11 13:40:48.843956", "pot": 110, "winner": 0, "hand": "Full House", "gain": 110}], "strengths": [{"name": "One Pair", "count": 59}, {"name": "Two Pair", "count": 27}, {"name": "High Card", "count": 20}, {"name": "Three of a Kind", "count": 6}, {"name": "Flush", "count": 4}, {"name": "Straight", "count": 3}, {"name": "Full House", "count": 1}]};
+        
+        // Populate Stats
+        document.getElementById('stat-hands').innerText = raw.table.length;
+        const avgPot = raw.table.length > 0 ? (raw.table.reduce((a, b) => a + b.pot, 0) / raw.table.length).toFixed(0) : 0;
+        document.getElementById('stat-avg-pot').innerText = '$' + Number(avgPot).toLocaleString();
+        document.getElementById('stat-total-volume').innerText = raw.table.reduce((a, b) => a + b.pot, 0).toLocaleString();
+
+        // 1. Stack Size Over Time (Line Chart)
+        const pids = [...new Set(raw.stack_history.map(d => d.pid))].sort();
+        const hands = [...new Set(raw.stack_history.map(d => d.hand))].sort((a,b) => a-b);
+        
+        const stackDatasets = pids.map(pid => {
+            const playerHistory = raw.stack_history.filter(d => d.pid === pid);
+            const dataMap = {};
+            playerHistory.forEach(d => dataMap[d.hand] = d.chips);
+            
+            // Fill in gaps if any
+            let lastVal = 1000; // Starting chips fallback
+            const finalData = hands.map(h => {
+                if (dataMap[h] !== undefined) lastVal = dataMap[h];
+                return lastVal;
+            });
+
+            return {
+                label: `Player ${pid}`,
+                data: finalData,
+                borderColor: pid === 0 ? '#2c7be5' : (pid === 1 ? '#d39e00' : (pid === 2 ? '#e63757' : '#00d97e')),
+                backgroundColor: 'transparent',
+                borderWidth: 2,
+                pointRadius: 0,
+                tension: 0.1
+            };
+        });
+
+        new Chart(document.getElementById('stackChart'), {
+            type: 'line',
+            data: { labels: hands, datasets: stackDatasets },
+            options: {
+                responsive: true,
+                interaction: { intersect: false, mode: 'index' },
+                scales: {
+                    x: { title: { display: true, text: 'Hand Number' } },
+                    y: { title: { display: true, text: 'Stack Size' }, beginAtZero: false }
+                },
+                plugins: { legend: { position: 'bottom' } }
+            }
+        });
+
+        // 2. Win Count (Bar Chart)
+        new Chart(document.getElementById('winChart'), {
+            type: 'bar',
+            data: {
+                labels: raw.win_rates.map(w => 'P' + w.pid),
+                datasets: [{
+                    label: 'Wins',
+                    data: raw.win_rates.map(w => w.wins),
+                    backgroundColor: '#2c7be5'
+                }]
+            },
+            options: { scales: { y: { beginAtZero: true } }, plugins: { legend: { display: false } } }
+        });
+
+        // 3. Hand Strength (Horizontal Bar)
+        new Chart(document.getElementById('strengthChart'), {
+            type: 'bar',
+            data: {
+                labels: raw.strengths.map(s => s.name),
+                datasets: [{
+                    label: 'Count',
+                    data: raw.strengths.map(s => s.count),
+                    backgroundColor: '#6e84a3'
+                }]
+            },
+            options: { indexAxis: 'y', plugins: { legend: { display: false } } }
+        });
+
+        // Table
+        const tbody = document.getElementById('table-body');
+        raw.table.forEach(row => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td>${row.id}</td>
+                <td>${row.time}</td>
+                <td>$${row.pot.toLocaleString()}</td>
+                <td class="winner-cell">${row.winner !== null ? 'Player ' + row.winner : 'N/A'}</td>
+                <td>${row.hand || '-'}</td>
+                <td>${row.gain ? '+' + row.gain : '0'}</td>
+            `;
+            tbody.appendChild(tr);
+        });
+
+    </script>
+</body>
+</html>
+    

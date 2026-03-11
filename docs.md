@@ -19,7 +19,8 @@ All game logic lives on the server; bots only send actions and receive state.
 10. [Game Configuration](#game-configuration)
 11. [Message Protocol Reference](#message-protocol-reference)
 12. [Writing Your Bot](#writing-your-bot)
-13. [Troubleshooting](#troubleshooting)
+13. [Analytics Dashboard](#analytics-dashboard)
+14. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -30,6 +31,8 @@ All game logic lives on the server; bots only send actions and receive state.
 | `poker_server.py` | The table. Handles all game logic. Run once. |
 | `bot.py` | Bot skeleton. Run one instance per player seat. Edit `decide()` only. |
 | `launch.py` | Convenience script — starts server + N bots automatically on one machine. |
+| `data.py` | Generates a standalone HTML Analytics Dashboard. No dependencies needed. |
+| `poker_db.py` | Database manager for DuckDB logging. |
 
 
 ## Launching — Local (Same Machine)
@@ -601,3 +604,23 @@ Examples: `"Ah"` = Ace of hearts, `"Tc"` = Ten of clubs, `"2d"` = Two of diamond
 
 **Choppy/slow play over the internet**
 - The default `recv()` has no timeout — add `sock.settimeout(30)` in `bot.py`'s `connect()` method to avoid hanging forever if the connection drops mid-hand
+
+---
+
+## Analytics Dashboard
+
+The server automatically logs all hand data to a local **DuckDB** database (`poker_game.db`).
+You can view real-time statistics, win rates, and detailed hand histories using a standalone HTML dashboard.
+
+### Launching the Dashboard
+```bash
+python data.py
+```
+This will generate a `dashboard.html` file and automatically open it in your default web browser. No external server or `streamlit` dependency is required.
+
+### What's included:
+- **Win Rate by Player**: Bar chart showing total wins for each bot.
+- **Total Earnings**: Pie chart of chip gains distribution.
+- **Hand Strength Distribution**: Funnel chart showing how often certain hands (Trips, Pairs, etc.) were hit.
+- **Hand History**: A searchable table of every hand played.
+- **Detailed Inspection**: Select any hand ID to see the step-by-step action log and community cards.

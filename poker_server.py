@@ -19,6 +19,7 @@ import time
 import sys
 from collections import defaultdict
 from itertools import combinations
+from poker_db import PokerDB
 
 # ─────────────────────────────────────────────
 # CARD ENCODING
@@ -315,6 +316,8 @@ class PokerServer:
         self.players  = []
         self.lock     = threading.Lock()
         self.ready    = threading.Event()
+        self.db       = PokerDB()
+        self.current_hand_id = None
 
     # ── Connection phase ──────────────────────
     def accept_players(self):
@@ -400,6 +403,14 @@ class PokerServer:
                         "pot": pot,
                         "stacks": {p.pid: p.chips for p in players}})
 
+        # Log hand start
+        self.current_hand_id = self.db.log_hand_start(
+            players[dealer_idx].pid, players[sb_idx].pid, players[bb_idx].pid, pot
+        )
+        # Log initial blind actions
+        self.db.log_action(self.current_hand_id, "preflop", players[sb_idx].pid, "small_blind", self.small_blind, players[sb_idx].chips)
+        self.db.log_action(self.current_hand_id, "preflop", players[bb_idx].pid, "big_blind", self.big_blind, players[bb_idx].chips)
+
         # ── Betting rounds ──
         streets = [
             ("preflop",  [],                          0),
@@ -417,6 +428,7 @@ class PokerServer:
                                 "street": street_name,
                                 "cards": community,
                                 "pot": pot})
+                self.db.log_community(self.current_hand_id, street_name, community)
 
             active = [p for p in players if not p.folded and not p.all_in]
             if len([p for p in players if not p.folded]) <= 1:
@@ -441,6 +453,8 @@ class PokerServer:
                             "reason": "everyone_folded",
                             "pot": pot,
                             "stacks": {p.pid: p.chips for p in players}})
+            self.db.log_showdown(self.current_hand_id, winner.pid, winner.hole, "everyone_folded", 0, True, pot)
+            self.db.update_hand_pot(self.current_hand_id, pot)
         else:
             self._showdown(contenders, community, pot, players)
 
@@ -512,6 +526,9 @@ class PokerServer:
                     acted = {p.pid}   # others need to act again
                 else:
                     acted.add(p.pid)
+
+                self.db.log_action(self.current_hand_id, street, p.pid, act, amt if act in ("raise", "bet") else p.bet, p.chips)
+                self.db.update_hand_pot(self.current_hand_id, pot_so_far + pot_add)
 
                 self.broadcast({"type": "player_action", "pid": p.pid,
                                 "action": act, "amount": p.bet,
@@ -599,6 +616,15 @@ class PokerServer:
             "hand_name": best_name,
             "stacks":    {p.pid: p.chips for p in all_players}
         })
+
+        for p in contenders:
+            is_winner = p in winners
+            gain = (pot // len(winners)) if is_winner else 0
+            # score, cls, name
+            score, _, name = best_hand_score(p.hole, community)
+            self.db.log_showdown(self.current_hand_id, p.pid, p.hole, name, score, is_winner, gain)
+        
+        self.db.update_hand_pot(self.current_hand_id, pot)
 
 # ─────────────────────────────────────────────
 # ENTRY POINT
