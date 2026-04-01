@@ -19,6 +19,7 @@ class PokerDB:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS hands (
                     hand_id INTEGER PRIMARY KEY,
+                    game_id VARCHAR,
                     timestamp TIMESTAMP,
                     dealer_pid INTEGER,
                     sb_pid INTEGER,
@@ -55,25 +56,23 @@ class PokerDB:
                     gain INTEGER
                 )
             """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS players (
+                    pid INTEGER PRIMARY KEY,
+                    name VARCHAR
+                )
+            """)
             
-            try:
-                conn.execute("CREATE SEQUENCE hand_id_seq START 1")
-            except:
-                pass
-            try:
-                conn.execute("CREATE SEQUENCE action_id_seq START 1")
-            except:
-                pass
             conn.close()
 
-    def log_hand_start(self, dealer, sb, bb, pot):
+    def log_hand_start(self, game_id, dealer, sb, bb, pot):
         with self.lock:
             conn = self._get_conn()
-            hand_id = conn.execute("SELECT nextval('hand_id_seq')").fetchone()[0]
+            hand_id = conn.execute("SELECT COALESCE(MAX(hand_id), 0) + 1 FROM hands").fetchone()[0]
             conn.execute("""
-                INSERT INTO hands (hand_id, timestamp, dealer_pid, sb_pid, bb_pid, pot)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (hand_id, datetime.datetime.now(), dealer, sb, bb, pot))
+                INSERT INTO hands (hand_id, game_id, timestamp, dealer_pid, sb_pid, bb_pid, pot)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (hand_id, game_id, datetime.datetime.now(), dealer, sb, bb, pot))
             conn.close()
             return hand_id
 
@@ -81,7 +80,7 @@ class PokerDB:
         if hand_id is None: return
         with self.lock:
             conn = self._get_conn()
-            action_id = conn.execute("SELECT nextval('action_id_seq')").fetchone()[0]
+            action_id = conn.execute("SELECT COALESCE(MAX(action_id), 0) + 1 FROM actions").fetchone()[0]
             conn.execute("""
                 INSERT INTO actions (action_id, hand_id, street, pid, action, amount, chips)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -113,4 +112,14 @@ class PokerDB:
         with self.lock:
             conn = self._get_conn()
             conn.execute("UPDATE hands SET pot = ? WHERE hand_id = ?", (int(pot), hand_id))
+            conn.close()
+
+    def add_player(self, pid, name):
+        with self.lock:
+            conn = self._get_conn()
+            res = conn.execute("SELECT 1 FROM players WHERE pid = ?", (pid,)).fetchone()
+            if not res:
+                conn.execute("INSERT INTO players (pid, name) VALUES (?, ?)", (pid, name))
+            else:
+                conn.execute("UPDATE players SET name = ? WHERE pid = ?", (name, pid))
             conn.close()

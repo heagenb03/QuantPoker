@@ -17,6 +17,9 @@ import random
 import argparse
 import time
 import sys
+import os
+import csv
+import datetime
 from collections import defaultdict
 from itertools import combinations
 from poker_db import PokerDB
@@ -46,8 +49,9 @@ def _encode(card_str: str) -> int:
     s = SUIT_BITS[card_str[1]]
     return s | (r << 8) | PRIMES[r]
 
-def make_deck():
-    return [r+s for r in RANKS for s in SUITS]
+def make_deck(num_players):
+    num_decks = max(1, min(4, (num_players // 5) + 1))
+    return [r+s for r in RANKS for s in SUITS] * num_decks
 
 # ─────────────────────────────────────────────
 # LOOKUP TABLE HAND EVALUATOR
@@ -68,168 +72,50 @@ def make_deck():
 # 3326  – 6185 : One Pair        (class 1)
 # 6186  – 7462 : High Card       (class 0)
 
-class _LUT:
-    """
-    Pure-Python lookup table evaluator.
-    Built once at import time; evaluation of any 5-card hand is O(1).
-    Handles every edge case: wheel straight (A-2-3-4-5),
-    straight flush vs plain straight, all flush/pair interactions.
-    """
-    # Unique prime product for each of the 5-card rank patterns
-    # We use the same prime-product trick as Cactus Kev.
-
-    # All 5-card rank combos produce a unique product of primes in [2..41].
-    # We store two dicts:
-    #   _flush_rank[prime_product] → score  (for flushes / straight-flushes)
-    #   _rank[prime_product]       → score  (for non-flushes)
-
-    def __init__(self):
-        self._flush = {}   # prime_product → score  (flush + straight-flush)
-        self._mixed = {}   # prime_product → score  (pairs, trips, quads, straights, high-card)
-        self._build()
-
-    # ── straight detection ──────────────────
-    @staticmethod
-    def _is_straight(ranks_set):
-        """Return the high-card rank (0-12) of the straight, or -1."""
-        if len(ranks_set) != 5:
-            return -1
-        hi = max(ranks_set)
-        lo = min(ranks_set)
-        if hi - lo == 4:
-            return hi
-        # Wheel: A-2-3-4-5  (A=12, 2=0, 3=1, 4=2, 5=3)
-        if ranks_set == {12, 0, 1, 2, 3}:
-            return 3   # 5-high straight
-        return -1
-
-    def _build(self):
-        score = [0]   # mutable counter
-
-        def nxt():
-            score[0] += 1
-            return score[0]
-
-        # ── Straight flushes (10 total: Royal down to 5-high) ──
-        # High card ranks 12 (A) down to 3 (wheel high=3)
-        for hi in [12,11,10,9,8,7,6,5,4,3]:
-            if hi == 3:
-                rs = {12,0,1,2,3}   # wheel
-            else:
-                rs = set(range(hi-4, hi+1))
-            prod = 1
-            for r in rs:
-                prod *= PRIMES[r]
-            self._flush[prod] = nxt()   # straight-flush
-
-        # ── Four of a Kind (156 combos) ──
-        # Sorted: AAAA+K down to 2222+3
-        quads_order = [(q, k) for q in range(12,-1,-1) for k in range(12,-1,-1) if k != q]
-        for q, k in quads_order:
-            prod = PRIMES[q]**4 * PRIMES[k]
-            self._mixed[prod] = nxt()
-
-        # ── Full House (156 combos) ──
-        fh_order = [(t, p) for t in range(12,-1,-1) for p in range(12,-1,-1) if p != t]
-        for t, p in fh_order:
-            prod = PRIMES[t]**3 * PRIMES[p]**2
-            self._mixed[prod] = nxt()
-
-        # ── Flush (non-straight, 1277 combos) ──
-        from itertools import combinations as _comb
-        # All 5-card rank combos, no 5-in-a-row, sorted by descending rank vector
-        flush_combos = []
-        for combo in _comb(range(13), 5):
-            rs = set(combo)
-            hi = _LUT._is_straight(rs)
-            if hi == -1:  # not a straight
-                flush_combos.append(sorted(combo, reverse=True))
-        flush_combos.sort(reverse=True)
-        for combo in flush_combos:
-            prod = 1
-            for r in combo:
-                prod *= PRIMES[r]
-            self._flush[prod] = nxt()
-
-        # ── Straight (10 combos, non-flush) ──
-        for hi in [12,11,10,9,8,7,6,5,4,3]:
-            if hi == 3:
-                rs = {12,0,1,2,3}
-            else:
-                rs = set(range(hi-4, hi+1))
-            prod = 1
-            for r in rs:
-                prod *= PRIMES[r]
-            self._mixed[prod] = nxt()
-
-        # ── Three of a Kind (858 combos) ──
-        trips_order = []
-        for t in range(12,-1,-1):
-            kickers = [(k1,k2) for k1 in range(12,-1,-1)
-                                for k2 in range(k1-1,-1,-1)
-                                if k1 != t and k2 != t]
-            for k1, k2 in kickers:
-                trips_order.append((t, k1, k2))
-        for t, k1, k2 in trips_order:
-            prod = PRIMES[t]**3 * PRIMES[k1] * PRIMES[k2]
-            self._mixed[prod] = nxt()
-
-        # ── Two Pair (858 combos) ──
-        tp_order = []
-        for p1 in range(12,-1,-1):
-            for p2 in range(p1-1,-1,-1):
-                for k in range(12,-1,-1):
-                    if k != p1 and k != p2:
-                        tp_order.append((p1, p2, k))
-        for p1, p2, k in tp_order:
-            prod = PRIMES[p1]**2 * PRIMES[p2]**2 * PRIMES[k]
-            self._mixed[prod] = nxt()
-
-        # ── One Pair (2860 combos) ──
-        op_order = []
-        for p in range(12,-1,-1):
-            kickers = [(k1,k2,k3) for k1 in range(12,-1,-1)
-                                   for k2 in range(k1-1,-1,-1)
-                                   for k3 in range(k2-1,-1,-1)
-                                   if p not in (k1,k2,k3)]
-            for k1,k2,k3 in kickers:
-                op_order.append((p,k1,k2,k3))
-        for p,k1,k2,k3 in op_order:
-            prod = PRIMES[p]**2 * PRIMES[k1] * PRIMES[k2] * PRIMES[k3]
-            self._mixed[prod] = nxt()
-
-        # ── High Card (1277 combos, non-flush, non-straight) ──
-        hc_combos = []
-        for combo in _comb(range(13), 5):
-            rs = set(combo)
-            if _LUT._is_straight(rs) == -1:
-                hc_combos.append(sorted(combo, reverse=True))
-        hc_combos.sort(reverse=True)
-        for combo in hc_combos:
-            prod = 1
-            for r in combo:
-                prod *= PRIMES[r]
-            self._mixed[prod] = nxt()
-
+class SimpleEvaluator:
     def score_five(self, cards) -> int:
-        """
-        Evaluate a 5-card hand (list of card strings).
-        Returns an integer 1 (best) … 7462 (worst).
-        """
-        encoded = [_encode(c) for c in cards]
-        # Flush detection: AND all suit bits; if non-zero all cards share a suit
-        suit_and = encoded[0] & encoded[1] & encoded[2] & encoded[3] & encoded[4] & 0xF000
-        # Prime product (rank only)
-        prod = 1
-        for e in encoded:
-            prod *= (e & 0xFF)
-        if suit_and:
-            return self._flush[prod]
-        return self._mixed[prod]
+        ranks = "23456789TJQKA"
+        parsed = [(ranks.index(c[0]), c[1]) for c in cards]
+        parsed.sort(key=lambda x: x[0], reverse=True)
+        
+        is_flush = len(set(c[1] for c in parsed)) == 1
+        rs = [c[0] for c in parsed]
+        
+        is_straight = False
+        if rs[0] - rs[-1] == 4 and len(set(rs)) == 5:
+            is_straight = True
+        elif rs == [12, 3, 2, 1, 0]: # wheel
+            is_straight = True
+            rs = [3, 2, 1, 0, -1] # effectively A becomes low
+            
+        counts = {}
+        for r in rs: counts[r] = counts.get(r, 0) + 1
+        
+        freqs = sorted([(c, r) for r, c in counts.items()], reverse=True)
+        pattern = [f[0] for f in freqs]
+        
+        if pattern == [5]: class_score = 9
+        elif is_straight and is_flush: class_score = 8
+        elif pattern == [4, 1]: class_score = 7
+        elif pattern == [3, 2]: class_score = 6
+        elif is_flush: class_score = 5
+        elif is_straight: class_score = 4
+        elif pattern == [3, 1, 1]: class_score = 3
+        elif pattern == [2, 2, 1]: class_score = 2
+        elif pattern == [2, 1, 1, 1]: class_score = 1
+        else: class_score = 0
+        
+        tie_breaker = tuple(f[1] for f in freqs for _ in range(f[0]))
+        
+        int_score = class_score << 20
+        for i, t in enumerate(tie_breaker):
+            int_score |= (t + 1) << (16 - i*4)
+            
+        return -int_score
 
     def best_of_seven(self, cards) -> int:
         """Best 5-card score from up to 7 cards (lower = better)."""
-        best = 9999
+        best = 999999999
         for combo in combinations(cards, 5):
             s = self.score_five(combo)
             if s < best:
@@ -237,24 +123,13 @@ class _LUT:
         return best
 
     def score_to_class(self, score: int) -> int:
-        """Map a score [1-7462] to a hand class 0-8."""
-        if score <=   10: return 8   # Straight Flush
-        if score <=  166: return 7   # Four of a Kind
-        if score <=  322: return 6   # Full House
-        if score <= 1599: return 5   # Flush
-        if score <= 1609: return 4   # Straight
-        if score <= 2467: return 3   # Three of a Kind
-        if score <= 3325: return 2   # Two Pair
-        if score <= 6185: return 1   # One Pair
-        return 0                     # High Card
-
-# Build the table once at import time (takes ~0.2 s, purely in Python)
-print("[EVAL] Building hand evaluation lookup table…", end=" ", flush=True)
-EVALUATOR = _LUT()
-print("done.")
+        score = -score
+        return score >> 20
+        
+EVALUATOR = SimpleEvaluator()
 
 HAND_NAMES = ['High Card','One Pair','Two Pair','Three of a Kind','Straight',
-              'Flush','Full House','Four of a Kind','Straight Flush']
+              'Flush','Full House','Four of a Kind','Straight Flush', 'Five of a Kind']
 
 # ── Public interface used by the rest of the server ──────────────
 
@@ -281,6 +156,7 @@ class Player:
         self.folded = False
         self.all_in = False
         self.active = True     # connected
+        self.name   = f"Player_{pid}"
         self.lock   = threading.Lock()
 
     def send(self, msg: dict):
@@ -291,14 +167,23 @@ class Player:
             self.active = False
 
     def recv(self):
+        self.conn.settimeout(10.0)
         buf = b''
-        while b'\n' not in buf:
-            chunk = self.conn.recv(1024)
-            if not chunk:
-                self.active = False
-                return None
-            buf += chunk
-        return json.loads(buf.split(b'\n')[0].decode())
+        try:
+            while b'\n' not in buf:
+                chunk = self.conn.recv(1024)
+                if not chunk:
+                    self.active = False
+                    return None
+                buf += chunk
+            self.conn.settimeout(None)
+            return json.loads(buf.split(b'\n')[0].decode())
+        except socket.timeout:
+            print(f"[SERVER] {self.name} timed out.")
+            return None
+        except Exception:
+            self.active = False
+            return None
 
 # ─────────────────────────────────────────────
 # POKER SERVER
@@ -318,6 +203,7 @@ class PokerServer:
         self.ready    = threading.Event()
         self.db       = PokerDB()
         self.current_hand_id = None
+        self.game_id  = datetime.datetime.now().strftime("game_%Y%m%d_%H%M%S")
 
     # ── Connection phase ──────────────────────
     def accept_players(self):
@@ -331,15 +217,39 @@ class PokerServer:
             conn, addr = srv.accept()
             pid = len(self.players)
             p = Player(pid, conn, addr, self.starting_chips)
+            
+            p.conn.settimeout(5.0)
+            try:
+                # Need to read raw inside try using p.recv() will use 10s default, which is fine, 
+                # but let's just use it and rely on its builtin 10s timeout, or socket directly
+                # because p.recv() overrides timeout to 10.0
+                buf = b''
+                while b'\n' not in buf:
+                    chunk = conn.recv(1024)
+                    if not chunk:
+                        break
+                    buf += chunk
+                msg = json.loads(buf.split(b'\n')[0].decode())
+                if msg and msg.get("type") == "login":
+                    p.name = msg.get("name", p.name)
+            except Exception:
+                pass
+            p.conn.settimeout(None)
+            
             self.players.append(p)
-            print(f"[SERVER] Player {pid} connected from {addr}")
-            p.send({"type": "welcome", "pid": pid,
-                    "chips": self.starting_chips,
-                    "big_blind": self.big_blind,
-                    "num_players": self.num_players})
+            print(f"[SERVER] {p.name} (Player {pid}) connected from {addr}")
 
         print("[SERVER] All players connected. Starting game.")
         srv.close()
+
+        names_dict = {p.pid: p.name for p in self.players}
+        for p in self.players:
+            self.db.add_player(p.pid, p.name)
+            p.send({"type": "welcome", "pid": p.pid,
+                    "chips": self.starting_chips,
+                    "big_blind": self.big_blind,
+                    "num_players": self.num_players,
+                    "player_names": names_dict})
 
     # ── Broadcast ─────────────────────────────
     def broadcast(self, msg: dict, exclude=None):
@@ -367,7 +277,7 @@ class PokerServer:
 
     # ── Single hand ───────────────────────────
     def play_hand(self, players, dealer_idx):
-        deck = make_deck()
+        deck = make_deck(self.num_players)
         random.shuffle(deck)
         community = []
 
@@ -405,7 +315,7 @@ class PokerServer:
 
         # Log hand start
         self.current_hand_id = self.db.log_hand_start(
-            players[dealer_idx].pid, players[sb_idx].pid, players[bb_idx].pid, pot
+            self.game_id, players[dealer_idx].pid, players[sb_idx].pid, players[bb_idx].pid, pot
         )
         # Log initial blind actions
         self.db.log_action(self.current_hand_id, "preflop", players[sb_idx].pid, "small_blind", self.small_blind, players[sb_idx].chips)
@@ -453,7 +363,9 @@ class PokerServer:
                             "reason": "everyone_folded",
                             "pot": pot,
                             "stacks": {p.pid: p.chips for p in players}})
+            score, cls, name = best_hand_score(winner.hole, community)
             self.db.log_showdown(self.current_hand_id, winner.pid, winner.hole, "everyone_folded", 0, True, pot)
+            self._log_ml_data(winner.pid, winner.hole, community, "everyone_folded", score, True, pot)
             self.db.update_hand_pot(self.current_hand_id, pot)
         else:
             self._showdown(contenders, community, pot, players)
@@ -623,8 +535,29 @@ class PokerServer:
             # score, cls, name
             score, _, name = best_hand_score(p.hole, community)
             self.db.log_showdown(self.current_hand_id, p.pid, p.hole, name, score, is_winner, gain)
+            self._log_ml_data(p.pid, p.hole, community, name, score, is_winner, gain)
         
         self.db.update_hand_pot(self.current_hand_id, pot)
+
+    def _log_ml_data(self, pid, hole_cards, community_cards, hand_name, score, is_winner, pot_won):
+        os.makedirs("ml_data", exist_ok=True)
+        csv_path = os.path.join("ml_data", f"{self.game_id}.csv")
+        write_header = not os.path.exists(csv_path)
+        with open(csv_path, 'a', newline='') as f:
+            writer = csv.writer(f)
+            if write_header:
+                writer.writerow(['timestamp', 'hand_id', 'pid', 'hole_cards', 'community_cards', 'hand_name', 'score', 'is_winner', 'pot_won'])
+            writer.writerow([
+                datetime.datetime.now().isoformat(),
+                self.current_hand_id,
+                pid,
+                json.dumps(hole_cards),
+                json.dumps(community_cards),
+                hand_name,
+                score,
+                int(is_winner),
+                pot_won
+            ])
 
 # ─────────────────────────────────────────────
 # ENTRY POINT

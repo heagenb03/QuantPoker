@@ -93,58 +93,9 @@ class GameState:
 # ─────────────────────────────────────────────
 
 def decide(state: GameState):
-    """
-    Given the current game state, return your action.
-
-    Parameters
-    ----------
-    state : GameState
-        Everything about the current hand (see class above).
-
-    Returns
-    -------
-    One of:
-        "fold"
-        "check"               — only when state.can_check is True
-        "call"
-        "allin"
-        ("raise", amount)     — amount = total bet you want (>= state.min_raise)
-
-    WHAT YOU HAVE ACCESS TO
-    ───────────────────────
-    state.hole_cards      → your 2 cards, e.g. ["Ah", "Kd"]
-    state.community       → board cards, e.g. ["2c", "7h", "Td"]
-    state.street          → "preflop" | "flop" | "turn" | "river"
-    state.chips           → your stack
-    state.pot             → total pot
-    state.to_call         → cost to call
-    state.current_bet     → current highest bet this street
-    state.min_raise       → minimum legal raise total
-    state.can_check       → True if you can check for free
-    state.active_opponents→ number of non-folded opponents
-    state.pot_odds        → fraction of pot you'd invest to call
-    state.player_chips    → {pid: chips} for all players
-    state.player_folded   → {pid: bool}
-    state.player_allin    → {pid: bool}
-    state.history         → list of past action events this session
-    """
-
-    # ── Example: simple random bot ──────────────────────────────
-    # Replace everything below with your own logic!
-
-    if state.can_check:
+    if state.to_call == 0:
         return "check"
-
-    if state.to_call > state.chips // 3:
-        return "fold"
-
-    roll = random.random()
-    if roll < 0.6:
-        return "call"
-    elif roll < 0.8:
-        return ("raise", min(state.min_raise, state.chips + state.current_bet))
-    else:
-        return "fold"
+    return "call"
 
 # ─────────────────────────────────────────────
 # BOT CLIENT  (networking — do not edit)
@@ -156,6 +107,7 @@ class BotClient:
         self.port    = port
         self.name    = name
         self.pid     = None
+        self.player_names = {}
         self.history = []
         self.sock    = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._buf    = b''     # persistent recv buffer
@@ -163,6 +115,7 @@ class BotClient:
     def connect(self):
         self.sock.connect((self.host, self.port))
         print(f"[{self.name}] Connected to {self.host}:{self.port}")
+        self.send({"type": "login", "name": self.name})
 
     def send(self, msg: dict):
         data = json.dumps(msg) + '\n'
@@ -191,6 +144,7 @@ class BotClient:
             # ── Welcome ──────────────────────────────────
             if mtype == "welcome":
                 self.pid = msg["pid"]
+                self.player_names = msg.get("player_names", {})
                 print(f"[{self.name}] Assigned PID={self.pid}, "
                       f"chips={msg['chips']}, bb={msg['big_blind']}, "
                       f"players={msg['num_players']}")
@@ -220,31 +174,39 @@ class BotClient:
             # ── Someone else acted ───────────────────────
             elif mtype == "player_action":
                 pid = msg["pid"]
+                name = self.player_names.get(str(pid), f"Player {pid}")
                 act = msg["action"]
                 amt = msg.get("amount", "")
-                print(f"[{self.name}] Player {pid} → {act} {amt}  chips={msg.get('chips','?')}")
+                print(f"[{self.name}] {name} → {act} {amt}  chips={msg.get('chips','?')}")
                 self.history.append(msg)
 
             # ── Showdown ─────────────────────────────────
             elif mtype == "showdown":
-                print(f"[{self.name}] SHOWDOWN — winners: {msg['winners']}  "
+                winners_names = [self.player_names.get(str(w), f"Player {w}") for w in msg['winners']]
+                print(f"[{self.name}] SHOWDOWN — winners: {winners_names}  "
                       f"pot={msg['pot']}  best hand: {msg['hand_name']}")
                 for pid, cards in msg["hands"].items():
-                    print(f"           Player {pid}: {cards}")
+                    name = self.player_names.get(str(pid), f"Player {pid}")
+                    print(f"           {name}: {cards}")
                 print(f"           Stacks: {msg['stacks']}")
                 self.history.append(msg)
 
             elif mtype == "winner":
-                print(f"[{self.name}] Player {msg['pid']} wins pot={msg['pot']} "
+                name = self.player_names.get(str(msg['pid']), f"Player {msg['pid']}")
+                print(f"[{self.name}] {name} wins pot={msg['pot']} "
                       f"({msg['reason']})")
                 print(f"           Stacks: {msg['stacks']}")
 
             elif mtype == "hand_start":
-                print(f"[{self.name}] ── New hand ── dealer={msg['dealer']}  "
-                      f"sb={msg['sb']}  bb={msg['bb']}")
+                dealer = self.player_names.get(str(msg['dealer']), f"Player {msg['dealer']}")
+                sb = self.player_names.get(str(msg['sb']), f"Player {msg['sb']}")
+                bb = self.player_names.get(str(msg['bb']), f"Player {msg['bb']}")
+                print(f"[{self.name}] ── New hand ── dealer={dealer}  "
+                      f"sb={sb}  bb={bb}")
 
             elif mtype == "game_over":
-                print(f"[{self.name}] GAME OVER — winner: player {msg['winner']}")
+                winner = self.player_names.get(str(msg['winner']), f"Player {msg['winner']}") if msg['winner'] != -1 else "none"
+                print(f"[{self.name}] GAME OVER — winner: {winner}")
                 break
 
             else:

@@ -46,10 +46,10 @@ python poker_server.py --host localhost --port 9999 --players 4 --chips 1000 --b
 
 **Start each bot** (in separate terminals, or use `launch.py`):
 ```bash
-python bot.py --host localhost --port 9999 --name Bot0
-python bot.py --host localhost --port 9999 --name Bot1
-python bot.py --host localhost --port 9999 --name Bot2
-python bot.py --host localhost --port 9999 --name Bot3
+python bots/bot.py --host localhost --port 9999 --name Bot0
+python bots/bot.py --host localhost --port 9999 --name Bot1
+python bots/bot.py --host localhost --port 9999 --name Bot2
+python bots/bot.py --host localhost --port 9999 --name Bot3
 ```
 
 Or use the launcher to do all of the above in one command:
@@ -84,7 +84,7 @@ python poker_server.py --host 0.0.0.0 --port 9999 --players 4
 
 **On each bot machine, connect using the server's local IP:**
 ```bash
-python bot.py --host 192.168.1.42 --port 9999 --name BotA
+python bots/bot.py --host 192.168.1.42 --port 9999 --name BotA
 ```
 
 No router configuration needed — LAN traffic is local.
@@ -141,7 +141,7 @@ python poker_server.py --host 0.0.0.0 --port 9999 --players 4
 ### Step 5 — Share with bot authors
 Tell them to run:
 ```bash
-python bot.py --host 203.0.113.45 --port 9999 --name TheirBotName
+python bots/bot.py --host 203.0.113.45 --port 9999 --name TheirBotName
 ```
 
 ### Firewall note
@@ -200,7 +200,7 @@ python3 poker_server.py --host 0.0.0.0 --port 9999 --players 4
 ### Step 3 — Bots connect using the VPS public IP
 
 ```bash
-python bot.py --host YOUR_VPS_IP --port 9999 --name MyBot
+python bots/bot.py --host YOUR_VPS_IP --port 9999 --name MyBot
 ```
 
 ---
@@ -243,7 +243,7 @@ Forwarding  tcp://0.tcp.ngrok.io:12345 -> localhost:9999
 
 ### Step 4 — Share the ngrok address with bot authors
 ```bash
-python bot.py --host 0.tcp.ngrok.io --port 12345 --name TheirBot
+python bots/bot.py --host 0.tcp.ngrok.io --port 12345 --name TheirBot
 ```
 
 > **Note:** The ngrok address and port change every time you restart the tunnel
@@ -260,7 +260,7 @@ Anyone who wants to connect their bot needs three things:
 3. A copy of `bot.py` — they only edit the `decide()` function
 
 ```bash
-python bot.py --host <SERVER_IP> --port <PORT> --name <BOTNAME>
+python bots/bot.py --host <SERVER_IP> --port <PORT> --name <BOTNAME>
 ```
 
 The server will not start the game until **all seats are filled**. The number of

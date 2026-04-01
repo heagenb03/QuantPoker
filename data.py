@@ -13,65 +13,89 @@ def get_data():
     
     conn = duckdb.connect(DB_PATH)
     
+    try:
+        games_query = "SELECT DISTINCT game_id FROM hands WHERE game_id IS NOT NULL ORDER BY game_id DESC"
+        games = [r[0] for r in conn.execute(games_query).fetchall()]
+    except Exception:
+        # Before game_id was added
+        games = []
+
+    if not games:
+        conn.close()
+        return None
+
     # 1. Win Counts
     win_query = """
-        SELECT pid, COUNT(*) as wins
-        FROM showdowns
-        WHERE is_winner = True
-        GROUP BY pid
-        ORDER BY pid
+        SELECT h.game_id, s.pid, COUNT(*) as wins
+        FROM showdowns s
+        JOIN hands h ON s.hand_id = h.hand_id
+        WHERE s.is_winner = True AND h.game_id IS NOT NULL
+        GROUP BY h.game_id, s.pid
     """
-    win_rates = conn.execute(win_query).fetchall()
+    win_rates_raw = conn.execute(win_query).fetchall()
     
-    # 2. Stack Size Over Time (Line Chart Data)
-    # We'll track chips after each action/showdown for each player
-    stack_query = """
-        SELECT hand_id, pid, chips, action_id
-        FROM actions
-        UNION ALL
-        SELECT hand_id, pid, 0 as chips, 999999 as action_id -- Placeholder for showdown
-        FROM showdowns
-        ORDER BY hand_id, action_id
-    """
-    # Actually, a better way to get stack per hand is to look at the actions table's 'chips' value
-    # but that's 'chips remaining' at the time of action.
-    # Let's get the 'chips' value from the last action of each player in each hand.
-    
+    # 2. Stack Size
     history_query = """
-        SELECT hand_id, pid, chips
-        FROM actions
-        QUALIFY ROW_NUMBER() OVER (PARTITION BY hand_id, pid ORDER BY action_id DESC) = 1
-        ORDER BY hand_id, pid
+        SELECT h.game_id, a.hand_id, a.pid, a.chips
+        FROM actions a
+        JOIN hands h ON a.hand_id = h.hand_id
+        WHERE h.game_id IS NOT NULL
+        QUALIFY ROW_NUMBER() OVER (PARTITION BY a.hand_id, a.pid ORDER BY a.action_id DESC) = 1
+        ORDER BY h.game_id, a.hand_id, a.pid
     """
-    stack_history = conn.execute(history_query).fetchall()
+    stack_history_raw = conn.execute(history_query).fetchall()
 
     # 3. Hand Statistics Table
     table_query = """
-        SELECT h.hand_id, h.timestamp, h.pot, 
+        SELECT h.game_id, h.hand_id, h.timestamp, h.pot, 
                s.pid as winner_pid, s.hand_name, s.gain
         FROM hands h
         LEFT JOIN showdowns s ON h.hand_id = s.hand_id AND s.is_winner = True
-        ORDER BY h.hand_id DESC
+        WHERE h.game_id IS NOT NULL
+        ORDER BY h.game_id, h.hand_id DESC
     """
-    table_data = conn.execute(table_query).fetchall()
+    table_data_raw = conn.execute(table_query).fetchall()
 
     # 4. Hand Strength Distribution
     strength_query = """
-        SELECT hand_name, COUNT(*) as count 
-        FROM showdowns 
-        WHERE hand_name IS NOT NULL AND hand_name != 'everyone_folded'
-        GROUP BY hand_name 
-        ORDER BY count DESC
+        SELECT h.game_id, s.hand_name, COUNT(*) as count 
+        FROM showdowns s
+        JOIN hands h ON s.hand_id = h.hand_id
+        WHERE s.hand_name IS NOT NULL AND s.hand_name != 'everyone_folded' AND h.game_id IS NOT NULL
+        GROUP BY h.game_id, s.hand_name
     """
-    strengths = conn.execute(strength_query).fetchall()
+    strengths_raw = conn.execute(strength_query).fetchall()
+
+    try:
+        names_data = conn.execute("SELECT pid, name FROM players").fetchall()
+        player_names = {r[0]: r[1] for r in names_data}
+    except Exception:
+        player_names = {}
 
     conn.close()
+
+    data_by_game = {}
+    for g in games:
+        data_by_game[g] = {
+            "win_rates": [],
+            "stack_history": [],
+            "table": [],
+            "strengths": []
+        }
+
+    for r in win_rates_raw:
+        if r[0] in data_by_game: data_by_game[r[0]]["win_rates"].append({"pid": r[1], "wins": r[2]})
+    for r in stack_history_raw:
+        if r[0] in data_by_game: data_by_game[r[0]]["stack_history"].append({"hand": r[1], "pid": r[2], "chips": r[3]})
+    for r in table_data_raw:
+        if r[0] in data_by_game: data_by_game[r[0]]["table"].append({"id": r[1], "time": str(r[2]), "pot": r[3], "winner": r[4], "hand": r[5], "gain": r[6]})
+    for r in strengths_raw:
+        if r[0] in data_by_game: data_by_game[r[0]]["strengths"].append({"name": r[1], "count": r[2]})
     
     return {
-        "win_rates": [{"pid": r[0], "wins": r[1]} for r in win_rates],
-        "stack_history": [{"hand": r[0], "pid": r[1], "chips": r[2]} for r in stack_history],
-        "table": [{"id": r[0], "time": str(r[1]), "pot": r[2], "winner": r[3], "hand": r[4], "gain": r[5]} for r in table_data],
-        "strengths": [{"name": r[0], "count": r[1]} for r in strengths]
+        "games": games,
+        "player_names": player_names,
+        "data_by_game": data_by_game
     }
 
 def generate_html(data):
@@ -97,12 +121,24 @@ def generate_html(data):
             max-width: 1100px;
             margin: 0 auto;
         }}
-        h1 {{
-            font-size: 24px;
-            font-weight: 600;
+        .header {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
             border-bottom: 2px solid #eee;
             padding-bottom: 10px;
             margin-bottom: 30px;
+        }}
+        h1 {{
+            font-size: 24px;
+            font-weight: 600;
+            margin: 0;
+        }}
+        select {{
+            padding: 8px 16px;
+            font-size: 16px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
         }}
         h2 {{
             font-size: 18px;
@@ -167,7 +203,10 @@ def generate_html(data):
 </head>
 <body>
     <div class="container">
-        <h1>Poker Performance Analysis</h1>
+        <div class="header">
+            <h1>Poker Performance Analysis</h1>
+            <select id="gameSelect" onchange="renderGame(this.value)"></select>
+        </div>
         
         <div class="summary-grid">
             <div class="summary-card">
@@ -221,98 +260,115 @@ def generate_html(data):
     </div>
 
     <script>
-        const raw = {json_data};
+        const payload = {json_data};
+        const getName = (pid) => payload.player_names[pid] || ('Player ' + pid);
         
-        // Populate Stats
-        document.getElementById('stat-hands').innerText = raw.table.length;
-        const avgPot = raw.table.length > 0 ? (raw.table.reduce((a, b) => a + b.pot, 0) / raw.table.length).toFixed(0) : 0;
-        document.getElementById('stat-avg-pot').innerText = '$' + Number(avgPot).toLocaleString();
-        document.getElementById('stat-total-volume').innerText = raw.table.reduce((a, b) => a + b.pot, 0).toLocaleString();
+        let charts = {{}};
 
-        // 1. Stack Size Over Time (Line Chart)
-        const pids = [...new Set(raw.stack_history.map(d => d.pid))].sort();
-        const hands = [...new Set(raw.stack_history.map(d => d.hand))].sort((a,b) => a-b);
-        
-        const stackDatasets = pids.map(pid => {{
-            const playerHistory = raw.stack_history.filter(d => d.pid === pid);
-            const dataMap = {{}};
-            playerHistory.forEach(d => dataMap[d.hand] = d.chips);
+        const gSelect = document.getElementById('gameSelect');
+        payload.games.forEach(g => {{
+            const opt = document.createElement('option');
+            opt.value = g;
+            opt.text = g;
+            gSelect.appendChild(opt);
+        }});
+
+        function renderGame(gameId) {{
+            const raw = payload.data_by_game[gameId];
+            if(!raw) return;
+
+            document.getElementById('stat-hands').innerText = raw.table.length;
+            const avgPot = raw.table.length > 0 ? (raw.table.reduce((a, b) => a + b.pot, 0) / raw.table.length).toFixed(0) : 0;
+            document.getElementById('stat-avg-pot').innerText = '$' + Number(avgPot).toLocaleString();
+            document.getElementById('stat-total-volume').innerText = raw.table.reduce((a, b) => a + b.pot, 0).toLocaleString();
+
+            const pids = [...new Set(raw.stack_history.map(d => d.pid))].sort();
+            const hands = [...new Set(raw.stack_history.map(d => d.hand))].sort((a,b) => a-b);
             
-            // Fill in gaps if any
-            let lastVal = 1000; // Starting chips fallback
-            const finalData = hands.map(h => {{
-                if (dataMap[h] !== undefined) lastVal = dataMap[h];
-                return lastVal;
+            const stackDatasets = pids.map(pid => {{
+                const playerHistory = raw.stack_history.filter(d => d.pid === pid);
+                const dataMap = {{}};
+                playerHistory.forEach(d => dataMap[d.hand] = d.chips);
+                
+                let lastVal = 1000; 
+                const finalData = hands.map(h => {{
+                    if (dataMap[h] !== undefined) lastVal = dataMap[h];
+                    return lastVal;
+                }});
+
+                return {{
+                    label: getName(pid),
+                    data: finalData,
+                    borderColor: pid === 0 ? '#2c7be5' : (pid === 1 ? '#d39e00' : (pid === 2 ? '#e63757' : (pid === 3 ? '#00d97e' : '#6e84a3'))),
+                    backgroundColor: 'transparent',
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    tension: 0.1
+                }};
             }});
 
-            return {{
-                label: `Player ${{pid}}`,
-                data: finalData,
-                borderColor: pid === 0 ? '#2c7be5' : (pid === 1 ? '#d39e00' : (pid === 2 ? '#e63757' : '#00d97e')),
-                backgroundColor: 'transparent',
-                borderWidth: 2,
-                pointRadius: 0,
-                tension: 0.1
-            }};
-        }});
+            if(charts.stack) charts.stack.destroy();
+            charts.stack = new Chart(document.getElementById('stackChart'), {{
+                type: 'line',
+                data: {{ labels: hands, datasets: stackDatasets }},
+                options: {{
+                    responsive: true,
+                    interaction: {{ intersect: false, mode: 'index' }},
+                    scales: {{
+                        x: {{ title: {{ display: true, text: 'Hand Number' }} }},
+                        y: {{ title: {{ display: true, text: 'Stack Size' }}, beginAtZero: false }}
+                    }},
+                    plugins: {{ legend: {{ position: 'bottom' }} }}
+                }}
+            }});
 
-        new Chart(document.getElementById('stackChart'), {{
-            type: 'line',
-            data: {{ labels: hands, datasets: stackDatasets }},
-            options: {{
-                responsive: true,
-                interaction: {{ intersect: false, mode: 'index' }},
-                scales: {{
-                    x: {{ title: {{ display: true, text: 'Hand Number' }} }},
-                    y: {{ title: {{ display: true, text: 'Stack Size' }}, beginAtZero: false }}
+            if(charts.win) charts.win.destroy();
+            charts.win = new Chart(document.getElementById('winChart'), {{
+                type: 'bar',
+                data: {{
+                    labels: raw.win_rates.map(w => getName(w.pid)),
+                    datasets: [{{
+                        label: 'Wins',
+                        data: raw.win_rates.map(w => w.wins),
+                        backgroundColor: '#2c7be5'
+                    }}]
                 }},
-                plugins: {{ legend: {{ position: 'bottom' }} }}
-            }}
-        }});
+                options: {{ scales: {{ y: {{ beginAtZero: true }} }}, plugins: {{ legend: {{ display: false }} }} }}
+            }});
 
-        // 2. Win Count (Bar Chart)
-        new Chart(document.getElementById('winChart'), {{
-            type: 'bar',
-            data: {{
-                labels: raw.win_rates.map(w => 'P' + w.pid),
-                datasets: [{{
-                    label: 'Wins',
-                    data: raw.win_rates.map(w => w.wins),
-                    backgroundColor: '#2c7be5'
-                }}]
-            }},
-            options: {{ scales: {{ y: {{ beginAtZero: true }} }}, plugins: {{ legend: {{ display: false }} }} }}
-        }});
+            if(charts.strength) charts.strength.destroy();
+            charts.strength = new Chart(document.getElementById('strengthChart'), {{
+                type: 'bar',
+                data: {{
+                    labels: raw.strengths.map(s => s.name),
+                    datasets: [{{
+                        label: 'Count',
+                        data: raw.strengths.map(s => s.count),
+                        backgroundColor: '#6e84a3'
+                    }}]
+                }},
+                options: {{ indexAxis: 'y', plugins: {{ legend: {{ display: false }} }} }}
+            }});
 
-        // 3. Hand Strength (Horizontal Bar)
-        new Chart(document.getElementById('strengthChart'), {{
-            type: 'bar',
-            data: {{
-                labels: raw.strengths.map(s => s.name),
-                datasets: [{{
-                    label: 'Count',
-                    data: raw.strengths.map(s => s.count),
-                    backgroundColor: '#6e84a3'
-                }}]
-            }},
-            options: {{ indexAxis: 'y', plugins: {{ legend: {{ display: false }} }} }}
-        }});
+            const tbody = document.getElementById('table-body');
+            tbody.innerHTML = '';
+            raw.table.forEach(row => {{
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td>${{row.id}}</td>
+                    <td>${{row.time}}</td>
+                    <td>$${{row.pot.toLocaleString()}}</td>
+                    <td class="winner-cell">${{row.winner !== null ? getName(row.winner) : 'N/A'}}</td>
+                    <td>${{row.hand || '-'}}</td>
+                    <td>${{row.gain ? '+' + row.gain : '0'}}</td>
+                `;
+                tbody.appendChild(tr);
+            }});
+        }}
 
-        // Table
-        const tbody = document.getElementById('table-body');
-        raw.table.forEach(row => {{
-            const tr = document.createElement('tr');
-            tr.innerHTML = `
-                <td>${{row.id}}</td>
-                <td>${{row.time}}</td>
-                <td>$${{row.pot.toLocaleString()}}</td>
-                <td class="winner-cell">${{row.winner !== null ? 'Player ' + row.winner : 'N/A'}}</td>
-                <td>${{row.hand || '-'}}</td>
-                <td>${{row.gain ? '+' + row.gain : '0'}}</td>
-            `;
-            tbody.appendChild(tr);
-        }});
-
+        if (payload.games.length > 0) {{
+            renderGame(payload.games[0]);
+        }}
     </script>
 </body>
 </html>
@@ -325,7 +381,7 @@ def main():
     print(f"Generating Data Science Analytics Report from {{DB_PATH}}...")
     data = get_data()
     if not data:
-        print("No data found. Please run your poker server first.")
+        print("No valid game data found. Please run your poker server first.")
         return
     
     generate_html(data)
