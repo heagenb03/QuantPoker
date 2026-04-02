@@ -1,9 +1,12 @@
 *.db
 *.wal
+tests/__pycache__/*
 __pycache__/*
-__pycache__/poker_db.cpython-312.pyc
+.pytest_cache/
+
 
 Docs/
 CLAUDE.md
+.claude
 
 .venv/

@@ -1,2 +1,3 @@
-duckdb=0.10.3
+duckdb=1.5.1
 eval7=0.1.10
+pytest=9.0.2
