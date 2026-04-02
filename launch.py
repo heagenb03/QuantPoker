@@ -43,7 +43,7 @@ def main():
     # Start bots
     for i in range(args.players):
         bot_cmd = [
-            sys.executable, "bots/bot.py",
+            sys.executable, "bot.py",
             "--host", args.host,
             "--port", str(args.port),
             "--name", f"Bot{i}",
