@@ -63,6 +63,8 @@ class BotClient:
             # ── EDIT 2: capture dealer from hand_start + append it ─
             elif t == "hand_start":
                 bot.DEALER_PID = msg["dealer"]
+                from poker.decision_log import increment_hand
+                increment_hand()
                 self.history.append(msg)       # opponent model needs this
                 print(f"[{self.name}] ── New hand ── "
                       f"dealer={msg['dealer']}  sb={msg['sb']}  bb={msg['bb']}")
