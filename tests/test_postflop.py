@@ -609,3 +609,46 @@ class TestRunUnifiedSimulation:
         )
         result = run_unified_simulation(state, bb=20, n_sims=50)
         assert result.draw_premium == 0.0
+
+    def test_ev_bet_includes_opponent_call_contribution(self) -> None:
+        """Regression: _ev_bet must use pot + 2*size (our bet + their call).
+
+        The bug: pot + size was used instead of pot + 2*size, which under-
+        counts the called-pot by one bet-size.  With a near-nut hand on the
+        river (continuation_value ~ 1.0), bet EV must exceed pot because we
+        win our own bet back plus the opponent's call.  With the bug, bet EV
+        collapses to ~pot regardless of sizing.
+        """
+        # Quad aces on the river -- near-perfect equity, cont_val ~ 1.0
+        state = make_state(
+            hole_cards=["Ah", "Ad"],
+            street="river",
+            community=["As", "Ac", "2h", "7d", "3s"],
+            chips=1000,
+            pot=750,
+            to_call=0,
+            current_bet=0,
+            min_raise=40,
+            num_players=2,
+            player_folded={"0": False, "1": False},
+        )
+        result = run_unified_simulation(state, bb=20, n_sims=200)
+
+        # With cont_val ~ 1.0, correct bet_half EV should be substantially
+        # above pot (750).  The buggy formula caps bet EV at ~pot.
+        bet_half = result.ev_by_action.get("bet_half", 0.0)
+        check_ev = result.ev_by_action.get("check", 0.0)
+
+        # Primary assertion: betting must be more profitable than checking
+        # with the nuts and non-zero fold-to-bet probability.
+        assert bet_half > check_ev, (
+            f"Nut hand bet_half EV ({bet_half:.1f}) must exceed check EV "
+            f"({check_ev:.1f}) -- _ev_bet likely missing opponent call"
+        )
+
+        # Secondary: bet_half EV must exceed the pot (we win our bet back
+        # plus the opponent's call when called).
+        assert bet_half > 750, (
+            f"Nut hand bet_half EV ({bet_half:.1f}) should exceed pot (750) "
+            f"-- _ev_bet likely using pot+size instead of pot+2*size"
+        )
