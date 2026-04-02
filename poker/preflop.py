@@ -16,6 +16,7 @@ from poker.config import (
     PUSH_RANGE_POS_DECAY, PUSH_RANGE_TABLE_DECAY, PUSH_RANGE_TABLE_START,
     PUSH_FACING_SHOVE_MULT, OPEN_SIZE_BB, MANIAC_TIGHTEN_MULT,
     VS_3BET_SHOVE_SHORT, VS_3BET_SHOVE_DEEP, VS_3BET_SHORT_BB, VS_3BET_RAISE_MULT,
+    VS_3BET_SHOVE_DEEP_VS_MANIAC, VS_3BET_CALL_DEEP_VS_MANIAC, VS_3BET_CALL_DEEP,
     SPECULATIVE_STRENGTH, SPECULATIVE_POT_ODDS,
     CALL_THRESH_DEFAULT, CALL_THRESH_VS_NIT, CALL_THRESH_VS_MANIAC, CALL_THRESH_VS_STATION,
     SQUEEZE_STRENGTH_MULT, SQUEEZE_RAISE_MULT, MIN_STACK_TO_SQUEEZE,
@@ -159,13 +160,25 @@ def _preflop(state, pos: int, bb: int) -> object:
 
     # ── Facing a 3-bet ─────────────────────────────────────────────
     if facing_3bet:
-        shove_thresh = VS_3BET_SHOVE_SHORT if stack_bb < VS_3BET_SHORT_BB else VS_3BET_SHOVE_DEEP
+        # Maniacs 3-bet wide → defend more; use archetype-adjusted thresholds.
+        # Short-stack path is archetype-agnostic (stack depth dominates).
+        if stack_bb < VS_3BET_SHORT_BB:
+            shove_thresh    = VS_3BET_SHOVE_SHORT
+            call_thresh_3bt = VS_3BET_SHOVE_SHORT   # no call tier short-stacked
+        elif maniacs > 0:
+            shove_thresh    = VS_3BET_SHOVE_DEEP_VS_MANIAC
+            call_thresh_3bt = VS_3BET_CALL_DEEP_VS_MANIAC
+        else:
+            shove_thresh    = VS_3BET_SHOVE_DEEP
+            call_thresh_3bt = VS_3BET_CALL_DEEP
         if strength >= shove_thresh:
             if stack_bb < VS_3BET_SHORT_BB:
                 return "allin"
             size = min(int(state.to_call * VS_3BET_RAISE_MULT),
                     state.chips + state.current_bet)
             return ("raise", max(size, state.min_raise))
+        if strength >= call_thresh_3bt:
+            return "call"
         # Speculative set-mine / suited connector in position
         if (pos in (0, n - 1) and strength >= SPECULATIVE_STRENGTH
                 and state.pot_odds < SPECULATIVE_POT_ODDS):

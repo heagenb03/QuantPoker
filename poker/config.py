@@ -6,7 +6,7 @@ Parameters are grouped by the module that uses them.
 """
 
 # ── Simulation ─────────────────────────────────────────────────────
-N_SIMS = 600                  # Monte Carlo rollouts per decision
+N_SIMS = 1500            # Monte Carlo rollouts per decision
 
 # CVaR tail fraction — fraction of worst outcomes averaged for tail risk
 CVAR_TAIL = 0.20              # 0.20 = worst 20%
@@ -40,7 +40,7 @@ MIN_CV_TO_CALL = 0.25
 FOLD_TO_BET = {
     'nit':     0.65,
     'tag':     0.45,
-    'station': 0.08,   # stations call almost everything
+    'station': 0.08,
     'maniac':  0.20,
     'unknown': 0.40,
 }
@@ -48,7 +48,7 @@ BET_WHEN_CHECKED = {
     'nit':     0.20,
     'tag':     0.45,
     'station': 0.35,
-    'maniac':  0.75,   # maniacs bet into you constantly
+    'maniac':  0.75,
     'unknown': 0.35,
 }
 
@@ -84,9 +84,15 @@ MANIAC_TIGHTEN_MULT     = 1.35   # require strength × this to open vs maniacs
 
 # Facing a 3-bet
 VS_3BET_SHOVE_SHORT     = 0.55   # shove threshold when stack < VS_3BET_SHORT_BB
-VS_3BET_SHOVE_DEEP      = 0.65   # shove threshold when stack ≥ VS_3BET_SHORT_BB
+VS_3BET_SHOVE_DEEP      = 0.65   # 4-bet threshold vs TAG/unknown: JJ+, AKs
 VS_3BET_SHORT_BB        = 25     # stack_bb cutoff for short vs deep 3-bet response
 VS_3BET_RAISE_MULT      = 3      # 4-bet sizing = to_call × this
+
+# Archetype-adjusted 3-bet defense (deep stack only — short stack always shoves/folds)
+# Maniac 3-bets wide → defend more aggressively
+VS_3BET_SHOVE_DEEP_VS_MANIAC = 0.52  # 4-bet vs maniac: TT+, AK, AQs
+VS_3BET_CALL_DEEP_VS_MANIAC  = 0.44  # call vs maniac: 88-99, AJo, KQs
+VS_3BET_CALL_DEEP            = 0.58  # call vs TAG/unknown: AKo, TT, AQs (below 4-bet tier)
 
 # Speculative call vs 3-bet (set-mine / suited connector in position)
 SPECULATIVE_STRENGTH    = 0.12
