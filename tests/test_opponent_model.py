@@ -344,7 +344,79 @@ class TestBayesianFrequencyModel:
         assert s.get("bwc_alpha", 0) == 0
         assert s.get("bwc_beta", 0) == 0
 
-    # ── 5. Convergence: observations dominate prior ───────────────
+    # ── 5. Weak prior: early observations have Bayesian smoothing ─────
+
+    def test_weak_prior_applied_on_first_postflop_obs(self) -> None:
+        """First postflop observation on an unknown opponent seeds a weak prior
+        so subsequent observations update a proper Beta, not raw counts."""
+        pid = 20
+        setup_opponent(pid=pid, hands=5, vpip=2, pfr=1, raises=1, calls=1)
+        assert bot._OPP.archetype(pid) == "unknown"
+
+        # One fold facing a bet on the flop
+        msgs = _flop_action_msgs(pid, [(99, "bet"), (pid, "fold")])
+        bot._OPP.update(msgs)
+
+        s = bot._OPP._s[pid]
+        # Alpha should include weak prior + 1 fold observation
+        from poker.config import BETA_PSEUDOCOUNT_INITIAL, FOLD_TO_BET
+        prior_a = FOLD_TO_BET['unknown'] * BETA_PSEUDOCOUNT_INITIAL   # 0.40 * 2.0 = 0.80
+        assert abs(s['ftb_alpha'] - (prior_a + 1.0)) < 1e-9, (
+            f"ftb_alpha should be prior({prior_a}) + 1 fold = {prior_a + 1.0}, got {s['ftb_alpha']}"
+        )
+        assert s['ftb_weakly_seeded'] is True
+
+    def test_weak_prior_not_applied_twice(self) -> None:
+        """A second postflop observation must not re-add the weak prior."""
+        pid = 21
+        setup_opponent(pid=pid, hands=5, vpip=2, pfr=1, raises=1, calls=1)
+        from poker.config import BETA_PSEUDOCOUNT_INITIAL, FOLD_TO_BET
+        prior_a = FOLD_TO_BET['unknown'] * BETA_PSEUDOCOUNT_INITIAL
+
+        # Two folds facing a bet
+        msgs = _flop_action_msgs(pid, [
+            (99, "bet"), (pid, "fold"),
+            (99, "bet"), (pid, "fold"),
+        ])
+        bot._OPP.update(msgs)
+
+        s = bot._OPP._s[pid]
+        # Alpha = prior + 2 folds (not prior + prior + 2)
+        assert abs(s['ftb_alpha'] - (prior_a + 2.0)) < 1e-9, (
+            f"ftb_alpha should be {prior_a + 2.0}, got {s['ftb_alpha']}"
+        )
+
+    def test_single_fold_obs_shifts_estimate_above_prior(self) -> None:
+        """After one fold observation the estimate should exceed the unknown prior."""
+        pid = 22
+        setup_opponent(pid=pid, hands=5, vpip=2, pfr=1, raises=1, calls=1)
+
+        msgs = _flop_action_msgs(pid, [(99, "bet"), (pid, "fold")])
+        bot._OPP.update(msgs)
+
+        est = bot._OPP.fold_to_bet_est(pid)
+        assert est > 0.40, f"After one fold, estimate {est:.3f} should exceed unknown prior 0.40"
+        assert est < 1.0
+
+    def test_bwc_weak_prior_applied_on_first_postflop_bet(self) -> None:
+        """First postflop bet/check observation seeds bwc weak prior symmetrically."""
+        pid = 23
+        setup_opponent(pid=pid, hands=5, vpip=2, pfr=1, raises=1, calls=1)
+        assert bot._OPP.archetype(pid) == "unknown"
+
+        # pid bets into an unchecked street
+        msgs = _flop_action_msgs(pid, [(pid, "bet")])
+        bot._OPP.update(msgs)
+
+        s = bot._OPP._s[pid]
+        from poker.config import BETA_PSEUDOCOUNT_INITIAL, BET_WHEN_CHECKED
+        prior_a = BET_WHEN_CHECKED['unknown'] * BETA_PSEUDOCOUNT_INITIAL  # 0.35 * 2.0 = 0.70
+        assert abs(s['bwc_alpha'] - (prior_a + 1.0)) < 1e-9, (
+            f"bwc_alpha should be prior({prior_a}) + 1 bet = {prior_a + 1.0}, got {s['bwc_alpha']}"
+        )
+        assert s['bwc_weakly_seeded'] is True
+
+    # ── 6. Convergence: observations dominate prior ───────────────
 
     def test_convergence_dominates_prior(self) -> None:
         """After 40 folds and 10 calls (true rate ~0.80), the Bayesian
@@ -381,3 +453,62 @@ class TestBayesianFrequencyModel:
             f"After 50 observations, estimate {est:.3f} should be closer to "
             f"true rate {true_rate} than prior {tag_prior}"
         )
+
+
+# ═══════════════════════════════════════════════════════════════════
+# IN-HAND AGGRESSION TRACKING
+# ═══════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.opponent_model
+class TestInHandAggression:
+    """Tests for per-hand aggressive action counter and reset behaviour."""
+
+    def test_fresh_pid_has_zero_aggression(self) -> None:
+        assert bot._OPP.in_hand_aggression(1) == 0
+
+    def test_raise_increments_in_hand_aggression(self) -> None:
+        msgs = [{"type": "player_action", "pid": 1, "action": "raise", "street": "preflop"}]
+        bot._OPP.update(msgs)
+        assert bot._OPP.in_hand_aggression(1) == 1
+
+    def test_bet_and_allin_also_increment(self) -> None:
+        msgs = [
+            {"type": "player_action", "pid": 1, "action": "bet",   "street": "flop"},
+            {"type": "player_action", "pid": 1, "action": "allin", "street": "turn"},
+        ]
+        bot._OPP.update(msgs)
+        assert bot._OPP.in_hand_aggression(1) == 2
+
+    def test_fold_check_call_do_not_increment(self) -> None:
+        msgs = [
+            {"type": "player_action", "pid": 1, "action": "call",  "street": "preflop"},
+            {"type": "player_action", "pid": 1, "action": "check", "street": "flop"},
+            {"type": "player_action", "pid": 1, "action": "fold",  "street": "turn"},
+        ]
+        bot._OPP.update(msgs)
+        assert bot._OPP.in_hand_aggression(1) == 0
+
+    def test_resets_on_hand_start(self) -> None:
+        msgs = [
+            {"type": "player_action", "pid": 1, "action": "raise", "street": "preflop"},
+            {"type": "player_action", "pid": 1, "action": "bet",   "street": "flop"},
+        ]
+        bot._OPP.update(msgs)
+        assert bot._OPP.in_hand_aggression(1) == 2
+
+        bot._OPP.update([
+            {"type": "hand_start", "dealer": 0, "sb": 1, "bb": 2,
+             "stacks": {"0": 1000, "1": 1000}},
+        ])
+        assert bot._OPP.in_hand_aggression(1) == 0
+
+    def test_independent_per_pid(self) -> None:
+        msgs = [
+            {"type": "player_action", "pid": 1, "action": "raise", "street": "preflop"},
+            {"type": "player_action", "pid": 2, "action": "raise", "street": "preflop"},
+            {"type": "player_action", "pid": 2, "action": "bet",   "street": "flop"},
+        ]
+        bot._OPP.update(msgs)
+        assert bot._OPP.in_hand_aggression(1) == 1
+        assert bot._OPP.in_hand_aggression(2) == 2
