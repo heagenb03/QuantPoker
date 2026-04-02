@@ -1,7 +1,7 @@
 """
 poker/decision_log.py — Structured per-decision JSON-lines logger.
 
-Writes one JSON object per line to {bot_name}_decisions.log.
+Writes one JSON object per line to logs/{bot_name}_decisions.log.
 Only active when bot.LOG_DECISIONS is True.
 
 Enable via:
@@ -10,7 +10,10 @@ Enable via:
 """
 
 import json
+import os
 from typing import Any
+
+_LOG_DIR = "logs"
 
 # Module-level file handle — opened lazily on first write.
 _log_fh = None
@@ -24,7 +27,8 @@ def _ensure_open() -> bool:
     if not bot.LOG_DECISIONS:
         return False
     if _log_fh is None:
-        fname = f"{bot.BOT_NAME}_decisions.log"
+        os.makedirs(_LOG_DIR, exist_ok=True)
+        fname = os.path.join(_LOG_DIR, f"{bot.BOT_NAME}_decisions.log")
         _log_fh = open(fname, "a", encoding="utf-8")
     return True
 
