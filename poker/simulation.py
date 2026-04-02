@@ -234,7 +234,7 @@ def run_unified_simulation(state: 'GameState', bb: int,
     def _ev_bet(size: int) -> float:
         return (p_all_fold * pot
                 + (1.0 - p_all_fold)
-                * (continuation_value * (pot + size) - size))
+                * (continuation_value * (pot + 2 * size) - size))
 
     ev_by_action: dict = {'fold': 0.0}
 
