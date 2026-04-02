@@ -219,22 +219,8 @@ class TestPreflopDecision:
             isinstance(action, tuple) and action[0] == "raise"
         ), f"KQs facing raise should call/raise/fold, got {action}"
 
-    @pytest.mark.xfail(
-        reason="3-bet threshold too permissive: every hand passes >= 0.08, "
-               "bot 4-bets all hands vs 3-bet. Track: fix threshold in _handle_vs_3bet",
-        strict=False,
-    )
-    def test_scenario_facing_3bet_continues_or_4bets(self) -> None:
-        """Facing a 3-bet: the bot's threshold is strength >= 0.08 (normalized).
-
-        Since the Chen formula normalized to [0,1] never goes below ~0.10 for
-        any real hand, the bot effectively 4-bets all hands facing a 3-bet
-        (aggressive strategy). This test verifies the 4-bet behavior with a
-        marginal hand. The bot raises (4-bets) since strength >= 0.08.
-
-        Marked xfail because the current threshold is a known bug -- the bot
-        should NOT be 4-betting 87o vs a 3-bet.
-        """
+    def test_scenario_facing_3bet_folds_marginal(self) -> None:
+        """87o facing a 3-bet should fold — below all call/shove thresholds."""
         state = make_state(
             hole_cards=["8h", "7c"],
             street="preflop",
@@ -247,38 +233,23 @@ class TestPreflopDecision:
             my_pid=1,
         )
         action = _preflop(state, pos=1, bb=20)
-        # With the bug, bot 4-bets because preflop_strength(87o) ~ 0.25 >= 0.08.
-        # Correct behavior: 87o should fold vs a 3-bet.
-        assert action == "fold", (
-            f"87o facing 3bet should fold, got {action}"
-        )
+        assert action == "fold", f"87o facing 3bet should fold, got {action}"
 
-    @pytest.mark.xfail(
-        reason="3-bet threshold too permissive: 72o passes >= 0.08, "
-               "bot 4-bets instead of folding. Track: fix threshold in _handle_vs_3bet",
-        strict=False,
-    )
     def test_3bet_threshold_is_selective(self) -> None:
-        """Bot should fold genuinely weak hands (72o) vs a 3-bet.
-
-        This test will fail until the >= 0.08 threshold bug in
-        _handle_vs_3bet is fixed. Currently the bot 4-bets every hand.
-        """
+        """72o should fold vs a 3-bet."""
         state = make_state(
             hole_cards=["7h", "2c"],
             street="preflop",
             chips=1000,
             pot=200,
-            to_call=80,  # > 3*BB=60, so facing_3bet=True
+            to_call=80,
             current_bet=80,
             min_raise=160,
             num_players=4,
             my_pid=1,
         )
         action = _preflop(state, pos=1, bb=20)
-        assert action == "fold", (
-            f"72o facing 3bet should fold, got {action}"
-        )
+        assert action == "fold", f"72o facing 3bet should fold, got {action}"
 
     def test_scenario_facing_3bet_continues_premium(self) -> None:
         """Premium hand facing a 3-bet should 4-bet or call."""
@@ -295,6 +266,58 @@ class TestPreflopDecision:
         )
         action = _preflop(state, pos=1, bb=20)
         assert action != "fold", f"AA facing 3bet should not fold, got {action}"
+
+    def test_AKo_vs_maniac_3bet_does_not_fold(self) -> None:
+        """AKo should 4-bet or call a maniac's 3-bet.
+
+        Regression: VS_3BET_SHOVE_DEEP=0.65 was cutting out AKo (strength=0.583),
+        folding it even against maniacs who 3-bet wide.
+        """
+        setup_opponent(pid=1, hands=15, vpip=6, pfr=5, raises=10, calls=2)
+        state = make_state(
+            hole_cards=["Ah", "Kc"],   # AKo: strength ≈ 0.583
+            pot=270, to_call=120, current_bet=120, min_raise=240,
+            chips=980, num_players=4, my_pid=0,
+            player_folded={"0": False, "1": False, "2": True, "3": True},
+        )
+        action = _preflop(state, pos=1, bb=20)
+        assert action != "fold", f"AKo vs maniac 3-bet should not fold, got {action}"
+
+    def test_AQo_vs_maniac_3bet_does_not_fold(self) -> None:
+        """AQo should not fold vs a maniac 3-bet (maniac range is wide)."""
+        setup_opponent(pid=1, hands=15, vpip=6, pfr=5, raises=10, calls=2)
+        state = make_state(
+            hole_cards=["Ah", "Qc"],   # AQo: strength ≈ 0.542
+            pot=270, to_call=120, current_bet=120, min_raise=240,
+            chips=980, num_players=4, my_pid=0,
+            player_folded={"0": False, "1": False, "2": True, "3": True},
+        )
+        action = _preflop(state, pos=1, bb=20)
+        assert action != "fold", f"AQo vs maniac 3-bet should not fold, got {action}"
+
+    def test_88_vs_maniac_3bet_deep_does_not_fold(self) -> None:
+        """88 at 97BB should call a maniac's 3-bet, not fold."""
+        setup_opponent(pid=1, hands=15, vpip=6, pfr=5, raises=10, calls=2)
+        state = make_state(
+            hole_cards=["8h", "8d"],   # 88: strength = 0.5
+            pot=270, to_call=120, current_bet=120, min_raise=240,
+            chips=1940, num_players=4, my_pid=0,  # ~97 BB
+            player_folded={"0": False, "1": False, "2": True, "3": True},
+        )
+        action = _preflop(state, pos=1, bb=20)
+        assert action != "fold", f"88 vs maniac 3-bet at 97BB should not fold, got {action}"
+
+    def test_AKo_vs_tag_3bet_calls(self) -> None:
+        """AKo should call (or 4-bet) a TAG's 3-bet — not fold."""
+        setup_opponent(pid=1, hands=15, vpip=4, pfr=3, raises=5, calls=3)
+        state = make_state(
+            hole_cards=["Ah", "Kc"],   # AKo: strength ≈ 0.583
+            pot=270, to_call=120, current_bet=120, min_raise=240,
+            chips=980, num_players=4, my_pid=0,
+            player_folded={"0": False, "1": False, "2": True, "3": True},
+        )
+        action = _preflop(state, pos=1, bb=20)
+        assert action != "fold", f"AKo vs TAG 3-bet should not fold, got {action}"
 
     def test_no_raise_weak_hand_checks_bb(self) -> None:
         """BB with weak hand and no raise should check."""
