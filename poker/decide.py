@@ -9,6 +9,7 @@ from poker.position import get_position
 from poker.preflop import _preflop
 from poker.postflop import _postflop, _validate
 from poker.simulation import run_unified_simulation
+from poker.decision_log import log_decision
 
 
 def decide(state):
@@ -38,6 +39,7 @@ def decide(state):
     pos = get_position(state.my_pid, bot.DEALER_PID, state.num_players)
 
     # ── Step 4: Street-specific decision ──────────────────────────
+    sim_result = None
     if state.street == 'preflop':
         action = _preflop(state, pos, bb)
     else:
@@ -47,4 +49,9 @@ def decide(state):
         action     = _postflop(state, sim_result, pos, bb)
 
     # ── Step 5: Validate and return ───────────────────────────────
-    return _validate(action, state)
+    action = _validate(action, state)
+
+    # ── Step 6: Log decision (no-op unless --log-decisions enabled) ─
+    log_decision(state, pos, bb, action, sim_result)
+
+    return action

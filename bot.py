@@ -48,6 +48,11 @@ _OPP = _OpponentModel()
 
 if __name__ == "__main__":
     import os
+    import sys
+    # Register this module as 'bot' so submodules that do `import bot`
+    # see the same instance (not a fresh re-import with LOG_DECISIONS=False).
+    sys.modules['bot'] = sys.modules['__main__']
+
     try:
         from dotenv import load_dotenv
         load_dotenv()  # loads .env from the working directory into os.environ

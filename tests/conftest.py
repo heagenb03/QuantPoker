@@ -16,6 +16,7 @@ Usage:
 
 import pytest
 import bot
+import poker.decision_log as decision_log
 
 
 # ── Autouse fixture: reset all module-level globals between tests ──
@@ -28,6 +29,9 @@ def _reset_bot_globals() -> None:
     bot.NUM_DECKS = 1
     bot._HLEN = 0
     bot._OPP = bot._OpponentModel()
+    bot.BOT_NAME = "Bot"
+    bot.LOG_DECISIONS = False
+    decision_log.reset()
     yield
     # Teardown: reset again to avoid pollution
     bot.BIG_BLIND = 20
@@ -35,6 +39,9 @@ def _reset_bot_globals() -> None:
     bot.NUM_DECKS = 1
     bot._HLEN = 0
     bot._OPP = bot._OpponentModel()
+    bot.BOT_NAME = "Bot"
+    bot.LOG_DECISIONS = False
+    decision_log.reset()
 
 
 # ── Helper: Build a GameState from keyword overrides ───────────────
