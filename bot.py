@@ -2,27 +2,27 @@
 bot.py — Tournament Poker Bot
 ==============================
 Architecture:
-  1. Parse history → _OpponentModel (VPIP, PFR, AF, showdown calibration)
-  2. Detect position from hand_start messages stored in history
-  3. Preflop: situation classifier → polarized ranges (position × table_size)
-  4. Postflop: run_unified_simulation() → SimResult → _postflop()
+1. Parse history → _OpponentModel (VPIP, PFR, AF, showdown calibration)
+2. Detect position from hand_start messages stored in history
+3. Preflop: situation classifier → polarized ranges (position × table_size)
+4. Postflop: run_unified_simulation() → SimResult → _postflop()
 
 Unified simulation (postflop only) — three steps in one loop:
-  Step 1: full distribution (equity + variance + CVaR + risk-adjusted equity)
-  Step 2: continuation value (draw premium per street — Longstaff-Schwartz intuition)
-  Step 3: per-action EV (opponent fold/bet probabilities from archetype model)
+Step 1: full distribution (equity + variance + CVaR + risk-adjusted equity)
+Step 2: continuation value (draw premium per street — Longstaff-Schwartz intuition)
+Step 3: per-action EV (opponent fold/bet probabilities from archetype model)
 
 Isolation pattern:
-  SimResult is the only interface between simulation and decision.
-  _postflop(state, sim_result, pos, bb) takes SimResult, never raw floats.
-  Tests construct SimResult directly — no simulation needed to test decisions.
+SimResult is the only interface between simulation and decision.
+_postflop(state, sim_result, pos, bb) takes SimResult, never raw floats.
+Tests construct SimResult directly — no simulation needed to test decisions.
 
 Quant finance parallels:
-  - Step 1 variance + CVaR     ↔  risk-adjusted return, Sharpe penalization
-  - Step 1 lambda scaling      ↔  fractional Kelly, risk aversion by drawdown
-  - Step 2 draw premium        ↔  option value / theta decay by street
-  - Step 3 fold equity         ↔  market impact, Kyle lambda
-  - Opponent archetypes        ↔  counterparty classification, alpha signals
+- Step 1 variance + CVaR     ↔  risk-adjusted return, Sharpe penalization
+- Step 1 lambda scaling      ↔  fractional Kelly, risk aversion by drawdown
+- Step 2 draw premium        ↔  option value / theta decay by street
+- Step 3 fold equity         ↔  market impact, Kyle lambda
+- Opponent archetypes        ↔  counterparty classification, alpha signals
 
 Usage:
     pip install eval7
@@ -33,12 +33,13 @@ import socket
 import json
 import argparse
 import random
-from collections import defaultdict
+from collections import defaultdict, Counter
 from dataclasses import dataclass, field
 
 # ── Module-level globals set by BotClient on welcome / hand_start ─
 BIG_BLIND  = 20       # updated from "welcome"
 DEALER_PID = None     # updated from "hand_start"
+NUM_DECKS  = 1        # updated from "welcome" via num_players
 
 # ── Card constants ─────────────────────────────────────────────────
 RANKS     = '23456789TJQKA'
@@ -47,17 +48,101 @@ ALL_CARDS = [r + s for r in RANKS for s in SUITS]
 RANK_IDX  = {r: i for i, r in enumerate(RANKS)}   # '2'→0 … 'A'→12
 
 # ── Hand evaluation wrapper ────────────────────────────────────────
+# Multi-deck aware: eval7 fast path for single-deck (no duplicates possible);
+# custom rank-counting evaluator for multi-deck (where duplicates can occur).
+
+_RANK_ORDER = {r: i+2 for i, r in enumerate('23456789TJQKA')}  # '2'→2 … 'A'→14
+
+from itertools import combinations as _combinations
+
+def _eval_5card_multideck(cards: list) -> tuple:
+    """Evaluate a 5-card hand with possible duplicates.
+    Returns (category, tiebreakers) — higher tuple = stronger hand."""
+    ranks = [_RANK_ORDER[c[0]] for c in cards]
+    suits = [c[1] for c in cards]
+    rank_counts = Counter(ranks)
+    counts_desc = sorted(rank_counts.values(), reverse=True)
+    is_flush = len(set(suits)) == 1
+    unique_sorted = sorted(set(ranks), reverse=True)
+
+    is_straight, straight_high = False, 0
+    if len(unique_sorted) >= 5:
+        for i in range(len(unique_sorted) - 4):
+            w = unique_sorted[i:i+5]
+            if w[0] - w[4] == 4:
+                is_straight, straight_high = True, w[0]
+                break
+        if not is_straight and 14 in unique_sorted:
+            lows = sorted([r for r in unique_sorted if r <= 5] + [1], reverse=True)
+            if len(lows) >= 5 and lows[0] - lows[4] == 4:
+                is_straight, straight_high = True, 5
+
+    if counts_desc[0] >= 5:
+        fivek = max(r for r, c in rank_counts.items() if c >= 5)
+        return (9, (fivek,))
+    if is_straight and is_flush:
+        return (8, (straight_high,))
+    if counts_desc[0] >= 4:
+        quad = max(r for r, c in rank_counts.items() if c >= 4)
+        kicker = max(r for r in ranks if r != quad)
+        return (7, (quad, kicker))
+    if counts_desc[0] >= 3 and len(counts_desc) > 1 and counts_desc[1] >= 2:
+        trip = max(r for r, c in rank_counts.items() if c >= 3)
+        pair = max(r for r, c in rank_counts.items() if c >= 2 and r != trip)
+        return (6, (trip, pair))
+    if is_flush:
+        return (5, tuple(sorted(ranks, reverse=True)))
+    if is_straight:
+        return (4, (straight_high,))
+    if counts_desc[0] >= 3:
+        trip = max(r for r, c in rank_counts.items() if c >= 3)
+        kickers = tuple(sorted([r for r in set(ranks) if r != trip], reverse=True)[:2])
+        return (3, (trip,) + kickers)
+    if len(counts_desc) > 1 and counts_desc[0] >= 2 and counts_desc[1] >= 2:
+        pairs = sorted([r for r, c in rank_counts.items() if c >= 2], reverse=True)[:2]
+        kicker = max(r for r in set(ranks) if r not in pairs)
+        return (2, tuple(pairs) + (kicker,))
+    if counts_desc[0] >= 2:
+        pair_r = max(r for r, c in rank_counts.items() if c >= 2)
+        kickers = tuple(sorted([r for r in set(ranks) if r != pair_r], reverse=True)[:3])
+        return (1, (pair_r,) + kickers)
+    return (0, tuple(sorted(ranks, reverse=True)[:5]))
+
+
+def _eval_multideck(card_strings: list) -> int:
+    """Evaluate a 5–7 card hand with possible duplicates (multi-deck).
+    Returns an integer where higher = stronger (matches eval7 convention)."""
+    cards = [(s[0], s[1]) for s in card_strings]
+    best = (-1, ())
+    for combo in _combinations(range(len(cards)), 5):
+        five = [cards[i] for i in combo]
+        score = _eval_5card_multideck(five)
+        if score > best:
+            best = score
+    cat, tb = best
+    result = cat << 20
+    for i, v in enumerate(tb[:5]):
+        result |= v << (4 * (4 - i))
+    return result
+
+
 try:
     import eval7 as _ev7
     def _eval(card_strings: list) -> int:
-        """Evaluate a hand. Higher score = stronger (eval7 convention)."""
-        return _ev7.evaluate([_ev7.Card(c) for c in card_strings])
+        """Evaluate a hand. Higher score = stronger (eval7 convention).
+        Single-deck: delegates to eval7 (C speed).
+        Multi-deck: uses custom rank-counting evaluator (handles duplicates)."""
+        if NUM_DECKS == 1:
+            return _ev7.evaluate([_ev7.Card(c) for c in card_strings])
+        return _eval_multideck(card_strings)
     print("[BOT] eval7 loaded ✓")
 except ImportError:
     print("[BOT] WARNING: eval7 not found.  Run:  pip install eval7")
     def _eval(card_strings: list) -> int:
-        # Naive rank-sum fallback — functional but weak. Install eval7!
-        return sum(RANK_IDX[c[0]] for c in card_strings)
+        if NUM_DECKS == 1:
+            # Naive rank-sum fallback — functional but weak. Install eval7!
+            return sum(RANK_IDX[c[0]] for c in card_strings)
+        return _eval_multideck(card_strings)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -253,8 +338,8 @@ def run_unified_simulation(state: 'GameState', bb: int,
         )
 
     # ── Set up card pool ───────────────────────────────────────────
-    known     = set(hole_cards + board)
-    available = [c for c in ALL_CARDS if c not in known]
+    full_deck = ALL_CARDS * NUM_DECKS
+    available = list((Counter(full_deck) - Counter(hole_cards + board)).elements())
     needed    = n_opponents * 2 + (5 - len(board))
 
     if len(available) < needed:
@@ -413,8 +498,8 @@ def monte_carlo_equity(hole_cards: list, board: list,
     """
     if n_opponents <= 0:
         return 1.0
-    known     = set(hole_cards + board)
-    available = [c for c in ALL_CARDS if c not in known]
+    full_deck = ALL_CARDS * NUM_DECKS
+    available = list((Counter(full_deck) - Counter(hole_cards + board)).elements())
     needed    = n_opponents * 2 + (5 - len(board))
     if len(available) < needed:
         return 0.5
@@ -474,6 +559,40 @@ def open_range_pct(pos: int, n: int) -> float:
         return 0.38 if behind == 1 else 0.30   # SB / BB
     pct = 0.48 * (0.85 ** (behind - 2))
     return max(0.06, pct)                        # floor: always open aces
+
+
+def _build_strength_lookup() -> list:
+    """Sorted Chen scores for all 169 canonical starting hand types.
+    Index 0 = strongest (AA ≈ 1.0), index 168 = weakest (72o ≈ 0.10).
+    Used by open_strength_threshold() to convert a hand-fraction percentile
+    into a minimum Chen score — fixing the direct `strength >= open_pct`
+    comparison which breaks at large tables where open_pct drops below the
+    minimum possible Chen score (~0.10), causing every hand to pass.
+    """
+    scores = []
+    for i, r1 in enumerate(RANKS):
+        for r2 in RANKS[i:]:
+            if r1 != r2:
+                scores.append(preflop_strength([r1 + 'h', r2 + 'h']))  # suited
+            scores.append(preflop_strength([r1 + 'h', r2 + 'c']))      # offsuit / pair
+    return sorted(scores, reverse=True)   # descending: strongest first
+
+
+_HAND_STRENGTHS: list = _build_strength_lookup()   # 169 entries, computed once at import
+
+
+def open_strength_threshold(open_pct: float) -> float:
+    """Convert a hand-fraction open range to a minimum Chen score threshold.
+
+    open_pct=0.20 → return the Chen score of the weakest hand still in the
+    top 20% of all 169 starting hand types.
+
+    Fixes the direct comparison `strength >= open_pct` which silently breaks
+    at large tables: the minimum Chen score (~0.10 for 72o) exceeds the UTG
+    open range at 13+ player tables (~0.08), making every hand appear openable.
+    """
+    idx = min(int(len(_HAND_STRENGTHS) * open_pct), len(_HAND_STRENGTHS) - 1)
+    return _HAND_STRENGTHS[idx]
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -620,12 +739,13 @@ def _preflop(state: GameState, pos: int, bb: int) -> object:
     facing_raise = state.to_call > bb
     facing_3bet  = state.to_call > 3 * bb
     open_pct     = open_range_pct(pos, n)
+    open_thresh  = open_strength_threshold(open_pct)
 
     # ── No raise to face: open opportunity ─────────────────────────
     if not facing_raise:
-        if strength >= open_pct:
+        if strength >= open_thresh:
             # Tighten slightly if maniacs will 3-bet us light
-            if maniacs > 0 and strength < open_pct * 1.35:
+            if maniacs > 0 and strength < open_thresh * 1.35:
                 return "check" if state.can_check else "fold"
             # Sizing: 3BB + 1BB per limper already in the pot
             limpers  = max(0, (state.pot - bb - bb // 2) // bb)
@@ -637,12 +757,13 @@ def _preflop(state: GameState, pos: int, bb: int) -> object:
 
     # ── Facing a 3-bet ─────────────────────────────────────────────
     if facing_3bet:
-        # Only continue with top ~8%: QQ+, AKs, AKo, JJ
-        if strength >= 0.08:
+        # Short stacks use a lower shove threshold (AKo = 0.583, covers AK/AQ/TT+)
+        shove_thresh = 0.55 if stack_bb < 25 else 0.65
+        if strength >= shove_thresh:
             if stack_bb < 25:
                 return "allin"
             size = min(int(state.to_call * 3),
-                       state.chips + state.current_bet)
+                    state.chips + state.current_bet)
             return ("raise", max(size, state.min_raise))
         # Speculative set-mine / suited connector in position
         if (pos in (0, n - 1) and strength >= 0.12
@@ -662,7 +783,7 @@ def _preflop(state: GameState, pos: int, bb: int) -> object:
         # 3-bet squeeze
         size = max(state.min_raise,
                    min(int(state.to_call * 3),
-                       state.chips + state.current_bet))
+                    state.chips + state.current_bet))
         return ("raise", size)
     if strength >= call_thresh and state.pot_odds < 0.35:
         return "call"
@@ -670,7 +791,7 @@ def _preflop(state: GameState, pos: int, bb: int) -> object:
 
 
 def _push_fold(state: GameState, strength: float,
-               pos: int, n: int, bb: int, stack_bb: float) -> object:
+            pos: int, n: int, bb: int, stack_bb: float) -> object:
     """
     Binary push/fold strategy for <15 BB stacks.
     Tightens with more players left to act (more chance of being called).
@@ -700,15 +821,15 @@ def _push_fold(state: GameState, strength: float,
 # ═══════════════════════════════════════════════════════════════════
 
 def _postflop(state: GameState, sim_result: SimResult,
-              pos: int, bb: int) -> object:
+            pos: int, bb: int) -> object:
     """
     Selects the best postflop action given a SimResult.
 
     Decision flow:
-      1. Start with ev_by_action from Step 3 (EV-ranked candidates)
-      2. Apply archetype override rules (trump EV in specific cases)
-      3. Filter to legal actions only
-      4. Pick highest EV, translate key to concrete action + amount
+        1. Start with ev_by_action from Step 3 (EV-ranked candidates)
+        2. Apply archetype override rules (trump EV in specific cases)
+        3. Filter to legal actions only
+        4. Pick highest EV, translate key to concrete action + amount
 
     To debug in isolation: construct a SimResult manually and call this
     function directly — no simulation needed.
@@ -903,26 +1024,29 @@ class BotClient:
 
             # ── EDIT 1: capture big_blind from welcome ─────────────
             if t == "welcome":
+                global BIG_BLIND, NUM_DECKS
                 self.pid  = msg["pid"]
                 BIG_BLIND = msg["big_blind"]
+                n_p = msg["num_players"]
+                NUM_DECKS = max(1, min(4, (n_p // 5) + 1))
                 print(f"[{self.name}] PID={self.pid}  chips={msg['chips']}  "
-                      f"bb={BIG_BLIND}  players={msg['num_players']}")
+                    f"bb={BIG_BLIND}  players={n_p}  decks={NUM_DECKS}")
 
             # ── EDIT 2: capture dealer from hand_start + append it ─
             elif t == "hand_start":
                 DEALER_PID = msg["dealer"]
                 self.history.append(msg)       # opponent model needs this
                 print(f"[{self.name}] ── New hand ── "
-                      f"dealer={msg['dealer']}  sb={msg['sb']}  bb={msg['bb']}")
+                    f"dealer={msg['dealer']}  sb={msg['sb']}  bb={msg['bb']}")
 
             elif t == "hole_cards":
                 print(f"[{self.name}] Dealt: {msg['cards']}  "
-                      f"chips={msg['chips']}  pot={msg['pot']}")
+                    f"chips={msg['chips']}  pot={msg['pot']}")
                 self.history.append(msg)
 
             elif t == "community_cards":
                 print(f"[{self.name}] Board ({msg['street']}): "
-                      f"{msg['cards']}  pot={msg['pot']}")
+                    f"{msg['cards']}  pot={msg['pot']}")
                 self.history.append(msg)
 
             elif t == "action_request":
@@ -930,9 +1054,9 @@ class BotClient:
                 action = decide(state)
                 resp   = self._build_response(action, state)
                 print(f"[{self.name}] Action → {resp}  "
-                      f"[pos={get_position(self.pid, DEALER_PID, state.num_players)} "
-                      f"bb={state.chips // BIG_BLIND}BB "
-                      f"street={state.street}]")
+                    f"[pos={get_position(self.pid, DEALER_PID, state.num_players)} "
+                    f"bb={state.chips // BIG_BLIND}BB "
+                    f"street={state.street}]")
                 self.send(resp)
                 self.history.append({"type": "my_action", **resp})
 
@@ -940,23 +1064,23 @@ class BotClient:
                 pid = msg["pid"]
                 arch = _OPP.archetype(pid)
                 print(f"[{self.name}] Player {pid} ({arch}) → "
-                      f"{msg['action']} {msg.get('amount','')}  "
-                      f"chips={msg.get('chips','?')}")
+                    f"{msg['action']} {msg.get('amount','')}  "
+                    f"chips={msg.get('chips','?')}")
                 self.history.append(msg)
 
             elif t == "showdown":
                 print(f"[{self.name}] SHOWDOWN — winners: {msg['winners']}  "
-                      f"pot={msg['pot']}")
+                    f"pot={msg['pot']}")
                 for pid, info in msg["hands"].items():
                     arch = _OPP.archetype(int(pid))
                     print(f"           Player {pid} ({arch}): "
-                          f"{info['cards']} ({info['hand']})")
+                        f"{info['cards']} ({info['hand']})")
                 print(f"           Stacks: {msg['stacks']}")
                 self.history.append(msg)
 
             elif t == "winner":
                 print(f"[{self.name}] Player {msg['pid']} wins "
-                      f"pot={msg['pot']} ({msg['reason']})")
+                    f"pot={msg['pot']} ({msg['reason']})")
                 print(f"           Stacks: {msg['stacks']}")
                 self.history.append(msg)       # opponent model reads this
 
