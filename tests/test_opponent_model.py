@@ -12,6 +12,26 @@ import bot
 from conftest import setup_opponent
 
 
+def _flop_action_msgs(pid: int, actions: list[tuple[str, str]]) -> list[dict]:
+    """Build a sequence of postflop player_action messages.
+
+    Each element in *actions* is (acting_pid_or_'other', action_str).
+    Wraps in a hand_start so the model sees street transitions.
+    """
+    msgs: list[dict] = [
+        {"type": "hand_start", "dealer": 0, "sb": 1, "bb": 2,
+         "stacks": {"0": 1000, str(pid): 1000, "99": 1000}},
+    ]
+    for actor, action in actions:
+        msgs.append({
+            "type": "player_action",
+            "pid": int(actor),
+            "action": action,
+            "street": "flop",
+        })
+    return msgs
+
+
 # ═══════════════════════════════════════════════════════════════════
 # OPPONENT MODEL
 # ═══════════════════════════════════════════════════════════════════
@@ -169,12 +189,195 @@ class TestOpponentModel:
         bot._OPP.update(messages)
         assert bot._OPP._s[1]["raises"] == 3
 
-    def test_call_and_fold_increment_calls(self) -> None:
-        """Call, fold, and check increment the calls counter."""
+    def test_call_increments_calls_fold_and_check_do_not(self) -> None:
+        """Only 'call' increments the calls counter. Fold and check are neutral."""
         messages = [
             {"type": "player_action", "pid": 1, "action": "call", "street": "flop"},
             {"type": "player_action", "pid": 1, "action": "fold", "street": "flop"},
             {"type": "player_action", "pid": 1, "action": "check", "street": "flop"},
         ]
         bot._OPP.update(messages)
-        assert bot._OPP._s[1]["calls"] == 3
+        assert bot._OPP._s[1]["calls"] == 1
+
+
+# ═══════════════════════════════════════════════════════════════════
+# BAYESIAN FREQUENCY MODEL
+# ═══════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.opponent_model
+class TestBayesianFrequencyModel:
+    """Tests for per-opponent Bayesian fold-to-bet / bet-when-checked tracking."""
+
+    # ── 1. Defaults fall back to archetype lookup ─────────────────
+
+    def test_fold_to_bet_default_returns_archetype_value(self) -> None:
+        """With no postflop observations, fold_to_bet_est equals the
+        archetype lookup from _FOLD_TO_BET."""
+        for arch, expected in [("nit", 0.65), ("tag", 0.45),
+                               ("station", 0.08), ("maniac", 0.20),
+                               ("unknown", 0.40)]:
+            pid = hash(arch) % 1000 + 100  # unique pid per archetype
+            if arch == "nit":
+                setup_opponent(pid=pid, hands=20, vpip=3, pfr=2,
+                               raises=5, calls=10)
+            elif arch == "tag":
+                setup_opponent(pid=pid, hands=20, vpip=5, pfr=3,
+                               raises=8, calls=8)
+            elif arch == "station":
+                setup_opponent(pid=pid, hands=20, vpip=8, pfr=2,
+                               raises=3, calls=12)
+            elif arch == "maniac":
+                setup_opponent(pid=pid, hands=20, vpip=8, pfr=6,
+                               raises=25, calls=5)
+            else:  # unknown
+                setup_opponent(pid=pid, hands=5, vpip=3, pfr=2,
+                               raises=5, calls=5)
+
+            assert bot._OPP.archetype(pid) == arch, f"setup error for {arch}"
+            result = bot._OPP.fold_to_bet_est(pid)
+            assert abs(result - expected) < 1e-9, (
+                f"fold_to_bet_est for {arch}: got {result}, expected {expected}"
+            )
+
+    def test_bet_when_checked_default_returns_archetype_value(self) -> None:
+        """With no postflop observations, bet_when_checked_est equals the
+        archetype lookup from _BET_WHEN_CHECKED."""
+        for arch, expected in [("nit", 0.20), ("tag", 0.45),
+                               ("station", 0.35), ("maniac", 0.75),
+                               ("unknown", 0.35)]:
+            pid = hash(arch) % 1000 + 200
+            if arch == "nit":
+                setup_opponent(pid=pid, hands=20, vpip=3, pfr=2,
+                               raises=5, calls=10)
+            elif arch == "tag":
+                setup_opponent(pid=pid, hands=20, vpip=5, pfr=3,
+                               raises=8, calls=8)
+            elif arch == "station":
+                setup_opponent(pid=pid, hands=20, vpip=8, pfr=2,
+                               raises=3, calls=12)
+            elif arch == "maniac":
+                setup_opponent(pid=pid, hands=20, vpip=8, pfr=6,
+                               raises=25, calls=5)
+            else:
+                setup_opponent(pid=pid, hands=5, vpip=3, pfr=2,
+                               raises=5, calls=5)
+
+            result = bot._OPP.bet_when_checked_est(pid)
+            assert abs(result - expected) < 1e-9, (
+                f"bet_when_checked_est for {arch}: got {result}, expected {expected}"
+            )
+
+    # ── 2. Fold-to-bet updates on postflop fold/call ──────────────
+
+    def test_fold_to_bet_updates_on_postflop_fold(self) -> None:
+        """When opponent faces a bet on the flop and folds,
+        ftb_alpha should increment (raising fold-to-bet estimate)."""
+        pid = 5
+        setup_opponent(pid=pid, hands=20, vpip=5, pfr=3, raises=8, calls=8)
+        # Someone bets, then pid folds
+        msgs = _flop_action_msgs(pid, [
+            (99, "bet"),    # opponent 99 bets — sets _had_bet_this_street
+            (pid, "fold"),  # pid folds facing bet — ftb_alpha += 1
+        ])
+        bot._OPP.update(msgs)
+        s = bot._OPP._s[pid]
+        assert s.get("ftb_alpha", 0) > 0, "ftb_alpha should have incremented"
+
+    def test_fold_to_bet_updates_on_postflop_call(self) -> None:
+        """When opponent faces a bet on the flop and calls,
+        ftb_beta should increment (lowering fold-to-bet estimate)."""
+        pid = 6
+        setup_opponent(pid=pid, hands=20, vpip=5, pfr=3, raises=8, calls=8)
+        msgs = _flop_action_msgs(pid, [
+            (99, "bet"),
+            (pid, "call"),
+        ])
+        bot._OPP.update(msgs)
+        s = bot._OPP._s[pid]
+        assert s.get("ftb_beta", 0) > 0, "ftb_beta should have incremented"
+
+    # ── 3. Bet-when-checked updates ───────────────────────────────
+
+    def test_bet_when_checked_updates_on_postflop_bet(self) -> None:
+        """When no bet has occurred this street and opponent bets,
+        bwc_alpha should increment."""
+        pid = 7
+        setup_opponent(pid=pid, hands=20, vpip=5, pfr=3, raises=8, calls=8)
+        # pid bets into an unchecked-to street
+        msgs = _flop_action_msgs(pid, [
+            (pid, "bet"),
+        ])
+        bot._OPP.update(msgs)
+        s = bot._OPP._s[pid]
+        assert s.get("bwc_alpha", 0) > 0, "bwc_alpha should have incremented"
+
+    def test_bet_when_checked_updates_on_postflop_check(self) -> None:
+        """When no bet has occurred this street and opponent checks,
+        bwc_beta should increment."""
+        pid = 8
+        setup_opponent(pid=pid, hands=20, vpip=5, pfr=3, raises=8, calls=8)
+        msgs = _flop_action_msgs(pid, [
+            (pid, "check"),
+        ])
+        bot._OPP.update(msgs)
+        s = bot._OPP._s[pid]
+        assert s.get("bwc_beta", 0) > 0, "bwc_beta should have incremented"
+
+    # ── 4. Preflop actions do NOT touch Beta params ───────────────
+
+    def test_preflop_actions_do_not_update_beta(self) -> None:
+        """Preflop raise/fold/call must NOT touch ftb/bwc counters."""
+        pid = 9
+        msgs = [
+            {"type": "hand_start", "dealer": 0, "sb": 1, "bb": 2,
+             "stacks": {"0": 1000, "9": 1000}},
+            {"type": "player_action", "pid": pid, "action": "raise",
+             "street": "preflop"},
+            {"type": "player_action", "pid": pid, "action": "fold",
+             "street": "preflop"},
+        ]
+        bot._OPP.update(msgs)
+        s = bot._OPP._s[pid]
+        assert s.get("ftb_alpha", 0) == 0
+        assert s.get("ftb_beta", 0) == 0
+        assert s.get("bwc_alpha", 0) == 0
+        assert s.get("bwc_beta", 0) == 0
+
+    # ── 5. Convergence: observations dominate prior ───────────────
+
+    def test_convergence_dominates_prior(self) -> None:
+        """After 40 folds and 10 calls (true rate ~0.80), the Bayesian
+        estimate should be closer to 0.80 than to the tag prior of 0.45."""
+        pid = 10
+        # Set up as tag (prior ftb = 0.45)
+        setup_opponent(pid=pid, hands=20, vpip=5, pfr=3, raises=8, calls=8)
+        assert bot._OPP.archetype(pid) == "tag"
+
+        # Feed 40 folds and 10 calls facing a bet
+        msgs: list[dict] = [
+            {"type": "hand_start", "dealer": 0, "sb": 1, "bb": 2,
+             "stacks": {"0": 1000, str(pid): 1000, "99": 1000}},
+        ]
+        for i in range(50):
+            # Each iteration: someone bets, then pid responds
+            msgs.append({"type": "player_action", "pid": 99,
+                         "action": "bet", "street": "flop"})
+            action = "fold" if i < 40 else "call"
+            msgs.append({"type": "player_action", "pid": pid,
+                         "action": action, "street": "flop"})
+            # New hand to reset street state
+            msgs.append({"type": "hand_start", "dealer": 0, "sb": 1,
+                         "bb": 2,
+                         "stacks": {"0": 1000, str(pid): 1000, "99": 1000}})
+
+        bot._OPP.update(msgs)
+
+        est = bot._OPP.fold_to_bet_est(pid)
+        tag_prior = 0.45
+        true_rate = 0.80
+        # Estimate should be closer to 0.80 than to 0.45
+        assert abs(est - true_rate) < abs(est - tag_prior), (
+            f"After 50 observations, estimate {est:.3f} should be closer to "
+            f"true rate {true_rate} than prior {tag_prior}"
+        )
