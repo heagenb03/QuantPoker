@@ -6,7 +6,7 @@ Parameters are grouped by the module that uses them.
 """
 
 # ── Simulation ─────────────────────────────────────────────────────
-N_SIMS = 1500            # Monte Carlo rollouts per decision
+N_SIMS = 50000    # Monte Carlo rollouts per decision
 
 # CVaR tail fraction — fraction of worst outcomes averaged for tail risk
 CVAR_TAIL = 0.20              # 0.20 = worst 20%
@@ -31,6 +31,9 @@ DRAW_DISCOUNT_TURN  = 0.90    # turn: one card left, less value
 # Bet sizing fractions (× pot)
 BET_HALF_FRAC = 0.50
 BET_FULL_FRAC = 1.00
+
+# Assumed opponent bet size (× pot) when modelling check EV — conservative estimate
+IMPLIED_OPP_BET_FRAC = 0.50
 
 # Minimum continuation value to call an opponent's bet when checking
 MIN_CV_TO_CALL = 0.25
@@ -146,3 +149,7 @@ ARCHETYPE_RANGE_WIDTH = {
 
 # Bayesian Beta prior pseudocount (worth this many observations)
 BETA_PSEUDOCOUNT        = 5.0
+# Weak prior applied on first postflop observation before archetype stabilises
+BETA_PSEUDOCOUNT_INITIAL = 2.0
+# Per in-hand aggressive action: fold_est *= this (0.65^2 ≈ 0.42 after 3-bet + c-bet)
+AGGRESSION_DISCOUNT_FACTOR = 0.65

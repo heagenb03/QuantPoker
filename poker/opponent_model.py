@@ -13,7 +13,7 @@ from poker.config import (
     MIN_HANDS_FOR_ARCHETYPE, MIN_HANDS_FOR_STATS,
     DEFAULT_VPIP, DEFAULT_PFR, DEFAULT_AF,
     NIT_VPIP_MAX, STATION_VPIP_MIN, STATION_AF_MAX, MANIAC_VPIP_MIN, MANIAC_AF_MIN,
-    ARCHETYPE_RANGE_WIDTH, BETA_PSEUDOCOUNT,
+    ARCHETYPE_RANGE_WIDTH, BETA_PSEUDOCOUNT, BETA_PSEUDOCOUNT_INITIAL,
 )
 
 
@@ -40,13 +40,16 @@ class _OpponentModel:
             'ftb_beta':  0.0,      # fold-to-bet failures (call/raise)
             'bwc_alpha': 0.0,      # bet-when-checked successes
             'bwc_beta':  0.0,      # bet-when-checked failures (check)
-            'ftb_seeded': False,   # whether prior has been seeded
+            'ftb_seeded': False,         # whether full archetype prior has been seeded
             'bwc_seeded': False,
+            'ftb_weakly_seeded': False,  # weak unknown prior applied on first postflop obs
+            'bwc_weakly_seeded': False,
         })
         self._vpip_this_hand = set()
         self._pfr_this_hand  = set()
         self._had_bet_this_street: bool = False
         self._current_street: str = ''
+        self._in_hand_raises: defaultdict = defaultdict(int)
 
     def update(self, messages: list) -> None:
         """Process only the NEW messages appended since last call."""
@@ -67,6 +70,7 @@ class _OpponentModel:
                 # Reset street tracking for new hand
                 self._had_bet_this_street = False
                 self._current_street = ''
+                self._in_hand_raises.clear()
 
             elif t == 'player_action':
                 pid    = msg['pid']
@@ -112,6 +116,7 @@ class _OpponentModel:
                 # are neutral and must not inflate the call count (which deflates AF).
                 if action in ('raise', 'allin', 'bet'):
                     self._s[pid]['raises'] += 1
+                    self._in_hand_raises[pid] += 1
                 elif action == 'call':
                     self._s[pid]['calls']  += 1
 
@@ -145,7 +150,18 @@ class _OpponentModel:
             return
         arch = self.archetype(pid)
         if arch == 'unknown':
-            return   # defer until archetype stabilises (≥10 hands)
+            # Apply a weak prior from the unknown archetype on the first postflop
+            # observation so that early data has a prior to anchor to rather than
+            # being used as raw counts with no smoothing.  Do NOT mark as seeded —
+            # the full archetype-specific prior is still applied once the archetype
+            # stabilises at ≥10 hands.
+            weakly_key = f'{param}_weakly_seeded'
+            if not self._s[pid][weakly_key]:
+                prior_mean = _FOLD_TO_BET['unknown'] if param == 'ftb' else _BET_WHEN_CHECKED['unknown']
+                self._s[pid][f'{param}_alpha'] += prior_mean * BETA_PSEUDOCOUNT_INITIAL
+                self._s[pid][f'{param}_beta'] += (1.0 - prior_mean) * BETA_PSEUDOCOUNT_INITIAL
+                self._s[pid][weakly_key] = True
+            return   # defer full seeding until archetype stabilises (≥10 hands)
         if param == 'ftb':
             prior_mean = _FOLD_TO_BET.get(arch, 0.40)
         else:
@@ -222,3 +238,7 @@ class _OpponentModel:
     def range_width(self, pid: int) -> float:
         """Estimated fraction of hands this opponent plays."""
         return ARCHETYPE_RANGE_WIDTH[self.archetype(pid)]
+
+    def in_hand_aggression(self, pid: int) -> int:
+        """Number of aggressive actions (raise/allin/bet) by *pid* in the current hand."""
+        return self._in_hand_raises[pid]

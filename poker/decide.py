@@ -10,6 +10,7 @@ from poker.preflop import _preflop
 from poker.postflop import _postflop, _validate
 from poker.simulation import run_unified_simulation
 from poker.decision_log import log_decision
+from poker.config import N_SIMS
 
 
 def decide(state):
@@ -45,7 +46,7 @@ def decide(state):
     else:
         # Unified simulation: Steps 1-3 in one pass.
         # Preflop skips this — preflop_strength() is fast and sufficient.
-        sim_result = run_unified_simulation(state, bb, n_sims=600)
+        sim_result = run_unified_simulation(state, bb, n_sims=N_SIMS)
         action     = _postflop(state, sim_result, pos, bb)
 
     # ── Step 5: Validate and return ───────────────────────────────

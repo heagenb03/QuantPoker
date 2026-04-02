@@ -17,7 +17,8 @@ from poker.config import (
     N_SIMS, CVAR_TAIL, LAMBDA_MIN, LAMBDA_MAX, LAMBDA_BASE, LAMBDA_DECAY,
     LAMBDA_REF_BB, IMPROVE_THRESH, DRAW_PREMIUM_MIN, DRAW_PREMIUM_MAX,
     DRAW_DISCOUNT_FLOP, DRAW_DISCOUNT_TURN, BET_HALF_FRAC, BET_FULL_FRAC,
-    MIN_CV_TO_CALL, FOLD_TO_BET, BET_WHEN_CHECKED,
+    IMPLIED_OPP_BET_FRAC, MIN_CV_TO_CALL, FOLD_TO_BET, BET_WHEN_CHECKED,
+    AGGRESSION_DISCOUNT_FACTOR,
 )
 
 
@@ -173,7 +174,6 @@ def run_unified_simulation(state: 'GameState', bb: int,
     # ── Step 2: draw premium and continuation value ────────────────
     # Draw path: terminal hand is meaningfully stronger than current board.
     # eval7: higher score = stronger hand (opposite of server convention).
-    IMPROVE_THRESH = 1.08   # terminal must be 8% stronger to count as improvement
     if board and street != 'river':
         improved = [s > current_board_score * IMPROVE_THRESH for s in terminal_scores]
         n_imp    = sum(improved)
@@ -209,10 +209,16 @@ def run_unified_simulation(state: 'GameState', bb: int,
     to_call = state.to_call
 
     # Fold probability compounds independently across all opponents
-    # (all must fold for a bet to win the pot uncontested)
+    # (all must fold for a bet to win the pot uncontested).
+    # Discount each opponent's fold estimate by their in-hand aggression:
+    # each raise/bet/allin they have shown this hand multiplies by
+    # AGGRESSION_DISCOUNT_FACTOR, reflecting that demonstrated strength
+    # reduces their likelihood of folding to our bet.
     p_all_fold = 1.0
     for pid in opp_pids:
-        p_all_fold *= bot._OPP.fold_to_bet_est(pid)
+        base_fold = bot._OPP.fold_to_bet_est(pid)
+        agg = bot._OPP.in_hand_aggression(pid)
+        p_all_fold *= base_fold * (AGGRESSION_DISCOUNT_FACTOR ** agg)
 
     # Probability at least one opponent bets when checked to
     p_no_bet = 1.0
@@ -234,7 +240,7 @@ def run_unified_simulation(state: 'GameState', bb: int,
 
     if state.can_check:
         # Assume opponent bets ~half pot when they bet (conservative)
-        implied_bet = max(1, int(pot * 0.50))
+        implied_bet = max(1, int(pot * IMPLIED_OPP_BET_FRAC))
         new_pot_if_bet = pot + implied_bet * 2
         if continuation_value > MIN_CV_TO_CALL:   # worth calling their bet
             ev_if_bet = continuation_value * new_pot_if_bet - implied_bet
