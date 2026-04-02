@@ -13,23 +13,18 @@ from dataclasses import dataclass
 
 from poker.constants import ALL_CARDS
 from poker.eval import _eval
+from poker.config import (
+    N_SIMS, CVAR_TAIL, LAMBDA_MIN, LAMBDA_MAX, LAMBDA_BASE, LAMBDA_DECAY,
+    LAMBDA_REF_BB, IMPROVE_THRESH, DRAW_PREMIUM_MIN, DRAW_PREMIUM_MAX,
+    DRAW_DISCOUNT_FLOP, DRAW_DISCOUNT_TURN, BET_HALF_FRAC, BET_FULL_FRAC,
+    MIN_CV_TO_CALL, FOLD_TO_BET, BET_WHEN_CHECKED,
+)
 
 
 # ── Archetype response tables (used in Steps 1 and 3) ─────────────
-_FOLD_TO_BET = {
-    'nit':     0.65,
-    'tag':     0.45,
-    'station': 0.08,   # stations call almost everything
-    'maniac':  0.20,
-    'unknown': 0.40,
-}
-_BET_WHEN_CHECKED = {
-    'nit':     0.20,
-    'tag':     0.45,
-    'station': 0.35,
-    'maniac':  0.75,   # maniacs bet into you constantly
-    'unknown': 0.35,
-}
+# These are imported from config.py — edit there to adjust bot behavior.
+_FOLD_TO_BET     = FOLD_TO_BET
+_BET_WHEN_CHECKED = BET_WHEN_CHECKED
 
 
 @dataclass
@@ -59,7 +54,7 @@ class SimResult:
 
 
 def run_unified_simulation(state: 'GameState', bb: int,
-                           n_sims: int = 600) -> SimResult:
+                           n_sims: int = N_SIMS) -> SimResult:
     """
     Three-step unified Monte Carlo producing a SimResult.
     All three steps share one loop over the same simulations — no repeated work.
@@ -99,7 +94,7 @@ def run_unified_simulation(state: 'GameState', bb: int,
     # ── Risk aversion (lambda): scales with stack depth ────────────
     # Quant parallel: fractional Kelly. Deep stacks tolerate variance;
     # short stacks must minimize it — ruin is permanent in a freezeout.
-    lambda_ = max(0.05, min(0.28, 0.30 - (stack_bb - 15) * 0.008))
+    lambda_ = max(LAMBDA_MIN, min(LAMBDA_MAX, LAMBDA_BASE - (stack_bb - LAMBDA_REF_BB) * LAMBDA_DECAY))
 
     # ── Opponent archetypes for Steps 2 and 3 ─────────────────────
     opp_pids = [
@@ -167,9 +162,9 @@ def run_unified_simulation(state: 'GameState', bb: int,
     equity   = sum(outcomes) / n_sims
     variance = sum((x - equity) ** 2 for x in outcomes) / n_sims
 
-    # CVaR: mean of worst 20% of outcomes (tail risk, not just spread)
+    # CVaR: mean of worst CVAR_TAIL of outcomes (tail risk, not just spread)
     # Quant parallel: Expected Shortfall — what we lose in bad scenarios
-    cvar_n   = max(1, int(n_sims * 0.20))
+    cvar_n   = max(1, int(n_sims * CVAR_TAIL))
     cvar     = sum(sorted(outcomes)[:cvar_n]) / cvar_n
 
     # Risk-adjusted equity: penalize variance by stack-depth-scaled lambda
@@ -195,11 +190,11 @@ def run_unified_simulation(state: 'GameState', bb: int,
         improve_freq = n_imp / n_sims
         raw_premium  = improve_freq * (imp_rate - steady_rate)
         # Cap to prevent outlier sims from distorting the number
-        draw_premium = max(-0.12, min(0.18, raw_premium))
+        draw_premium = max(DRAW_PREMIUM_MIN, min(DRAW_PREMIUM_MAX, raw_premium))
 
         # Street discount: option value decays as fewer cards remain
         # Quant parallel: theta decay — options lose value as expiry approaches
-        discount = {'flop': 0.70, 'turn': 0.90}.get(street, 1.0)
+        discount = {'flop': DRAW_DISCOUNT_FLOP, 'turn': DRAW_DISCOUNT_TURN}.get(street, 1.0)
         continuation_value = max(0.0, min(1.0, equity + draw_premium * discount))
     else:
         # River or no board: no future streets, no option value
@@ -225,8 +220,8 @@ def run_unified_simulation(state: 'GameState', bb: int,
         p_no_bet *= (1.0 - bot._OPP.bet_when_checked_est(pid))
     p_someone_bets = 1.0 - p_no_bet
 
-    bet_half  = max(state.min_raise, int(pot * 0.50))
-    bet_full  = max(state.min_raise, int(pot * 1.00))
+    bet_half  = max(state.min_raise, int(pot * BET_HALF_FRAC))
+    bet_full  = max(state.min_raise, int(pot * BET_FULL_FRAC))
     shove_amt = state.chips + state.current_bet
 
     # Helper: EV of betting a fixed size (fold equity + call equity)
@@ -241,7 +236,7 @@ def run_unified_simulation(state: 'GameState', bb: int,
         # Assume opponent bets ~half pot when they bet (conservative)
         implied_bet = max(1, int(pot * 0.50))
         new_pot_if_bet = pot + implied_bet * 2
-        if continuation_value > 0.25:   # worth calling their bet
+        if continuation_value > MIN_CV_TO_CALL:   # worth calling their bet
             ev_if_bet = continuation_value * new_pot_if_bet - implied_bet
         else:
             ev_if_bet = 0.0             # we fold to their bet

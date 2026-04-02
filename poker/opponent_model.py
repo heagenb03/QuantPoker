@@ -8,7 +8,13 @@ Showdown reveals = labeled training data (unique to this server).
 
 from collections import defaultdict
 
-from poker.simulation import _FOLD_TO_BET, _BET_WHEN_CHECKED
+from poker.config import (
+    FOLD_TO_BET as _FOLD_TO_BET, BET_WHEN_CHECKED as _BET_WHEN_CHECKED,
+    MIN_HANDS_FOR_ARCHETYPE, MIN_HANDS_FOR_STATS,
+    DEFAULT_VPIP, DEFAULT_PFR, DEFAULT_AF,
+    NIT_VPIP_MAX, STATION_VPIP_MIN, STATION_AF_MAX, MANIAC_VPIP_MIN, MANIAC_AF_MIN,
+    ARCHETYPE_RANGE_WIDTH, BETA_PSEUDOCOUNT,
+)
 
 
 class _OpponentModel:
@@ -147,9 +153,8 @@ class _OpponentModel:
         # Add pseudocount on top of any raw observations already accumulated
         # while archetype was 'unknown'. This preserves early data rather
         # than overwriting it.
-        pseudocount = 5.0
-        self._s[pid][f'{param}_alpha'] += prior_mean * pseudocount
-        self._s[pid][f'{param}_beta'] += (1.0 - prior_mean) * pseudocount
+        self._s[pid][f'{param}_alpha'] += prior_mean * BETA_PSEUDOCOUNT
+        self._s[pid][f'{param}_beta'] += (1.0 - prior_mean) * BETA_PSEUDOCOUNT
         self._s[pid][seeded_key] = True
 
     def fold_to_bet_est(self, pid: int) -> float:
@@ -182,17 +187,17 @@ class _OpponentModel:
 
     def vpip(self, pid: int) -> float:
         s = self._s[pid]
-        return s['vpip'] / s['hands'] if s['hands'] >= 5 else 0.25
+        return s['vpip'] / s['hands'] if s['hands'] >= MIN_HANDS_FOR_STATS else DEFAULT_VPIP
 
     def pfr(self, pid: int) -> float:
         s = self._s[pid]
-        return s['pfr'] / s['hands'] if s['hands'] >= 5 else 0.12
+        return s['pfr'] / s['hands'] if s['hands'] >= MIN_HANDS_FOR_STATS else DEFAULT_PFR
 
     def af(self, pid: int) -> float:
         """Aggression factor: raises / calls. >2 = aggressive."""
         s = self._s[pid]
         total = s['raises'] + s['calls']
-        return s['raises'] / max(s['calls'], 1) if total >= 5 else 1.0
+        return s['raises'] / max(s['calls'], 1) if total >= MIN_HANDS_FOR_STATS else DEFAULT_AF
 
     def archetype(self, pid: int) -> str:
         """
@@ -205,16 +210,15 @@ class _OpponentModel:
           maniac  → tighten preflop, trap with strong hands
           tag     → GTO-approximate play
         """
-        if self._s[pid]['hands'] < 10:
+        if self._s[pid]['hands'] < MIN_HANDS_FOR_ARCHETYPE:
             return 'unknown'
         v  = self.vpip(pid)
         af = self.af(pid)
-        if v < 0.18:                  return 'nit'
-        if v >= 0.35 and af < 1.5:   return 'station'
-        if v >= 0.30 and af >= 2.5:  return 'maniac'
+        if v < NIT_VPIP_MAX:                          return 'nit'
+        if v >= STATION_VPIP_MIN and af < STATION_AF_MAX:  return 'station'
+        if v >= MANIAC_VPIP_MIN  and af >= MANIAC_AF_MIN:  return 'maniac'
         return 'tag'
 
     def range_width(self, pid: int) -> float:
         """Estimated fraction of hands this opponent plays."""
-        return {'nit':0.12, 'tag':0.22, 'station':0.45,
-                'maniac':0.38, 'unknown':0.25}[self.archetype(pid)]
+        return ARCHETYPE_RANGE_WIDTH[self.archetype(pid)]

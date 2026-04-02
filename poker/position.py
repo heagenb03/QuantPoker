@@ -5,6 +5,11 @@ Position = information asymmetry.
 Late position (acting last) ↔ latency advantage in e-trading.
 """
 
+from poker.config import (
+    OPEN_RANGE_BASE, OPEN_RANGE_DECAY, OPEN_RANGE_FLOOR,
+    SB_OPEN_PCT, BB_OPEN_PCT,
+)
+
 
 def get_position(my_pid: int, dealer_pid, n_players: int) -> int:
     """
@@ -39,6 +44,6 @@ def open_range_pct(pos: int, n: int) -> float:
     """
     behind = players_behind_preflop(pos, n)
     if behind <= 1:
-        return 0.38 if behind == 1 else 0.30   # SB / BB
-    pct = 0.48 * (0.85 ** (behind - 2))
-    return max(0.06, pct)                        # floor: always open aces
+        return SB_OPEN_PCT if behind == 1 else BB_OPEN_PCT
+    pct = OPEN_RANGE_BASE * (OPEN_RANGE_DECAY ** (behind - 2))
+    return max(OPEN_RANGE_FLOOR, pct)

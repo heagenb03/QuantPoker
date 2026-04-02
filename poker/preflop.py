@@ -11,6 +11,16 @@ Preflop modules:
 
 from poker.constants import RANKS, RANK_IDX
 from poker.position import open_range_pct, players_behind_preflop
+from poker.config import (
+    PUSH_FOLD_STACK_BB, PUSH_RANGE_FLOOR, PUSH_RANGE_BASE,
+    PUSH_RANGE_POS_DECAY, PUSH_RANGE_TABLE_DECAY, PUSH_RANGE_TABLE_START,
+    PUSH_FACING_SHOVE_MULT, OPEN_SIZE_BB, MANIAC_TIGHTEN_MULT,
+    VS_3BET_SHOVE_SHORT, VS_3BET_SHOVE_DEEP, VS_3BET_SHORT_BB, VS_3BET_RAISE_MULT,
+    SPECULATIVE_STRENGTH, SPECULATIVE_POT_ODDS,
+    CALL_THRESH_DEFAULT, CALL_THRESH_VS_NIT, CALL_THRESH_VS_MANIAC, CALL_THRESH_VS_STATION,
+    SQUEEZE_STRENGTH_MULT, SQUEEZE_RAISE_MULT, MIN_STACK_TO_SQUEEZE,
+    POT_ODDS_CALL_MAX,
+)
 
 
 def preflop_strength(hole_cards: list) -> float:
@@ -91,16 +101,16 @@ def _push_fold(state, strength: float,
     """
     # Push threshold: looser on BTN, tighter UTG, tighter at big tables
     pos_pct   = pos / max(n - 1, 1)           # 0=BTN(loose) → 1=UTG(tight)
-    push_pct  = max(0.12, 0.52
-                    - pos_pct * 0.28
-                    - max(n - 6, 0) * 0.02)
+    push_pct  = max(PUSH_RANGE_FLOOR, PUSH_RANGE_BASE
+                    - pos_pct * PUSH_RANGE_POS_DECAY
+                    - max(n - PUSH_RANGE_TABLE_START, 0) * PUSH_RANGE_TABLE_DECAY)
 
     if state.to_call <= bb:                    # no raise or just BB
         if strength >= push_pct:
             return "allin"
         return "check" if state.can_check else "fold"
     else:                                      # facing a shove or big bet
-        if strength >= push_pct * 1.25:
+        if strength >= push_pct * PUSH_FACING_SHOVE_MULT:
             return "allin"
         return "fold"
 
@@ -125,7 +135,7 @@ def _preflop(state, pos: int, bb: int) -> object:
     # ── Short stack: push / fold only (<15 BB) ─────────────────────
     # Quant parallel: drawdown control — when stack is small,
     # variance is existential; switch to binary bet sizing.
-    if stack_bb < 15:
+    if stack_bb < PUSH_FOLD_STACK_BB:
         return _push_fold(state, strength, pos, n, bb, stack_bb)
 
     facing_raise = state.to_call > bb
@@ -137,11 +147,11 @@ def _preflop(state, pos: int, bb: int) -> object:
     if not facing_raise:
         if strength >= open_thresh:
             # Tighten slightly if maniacs will 3-bet us light
-            if maniacs > 0 and strength < open_thresh * 1.35:
+            if maniacs > 0 and strength < open_thresh * MANIAC_TIGHTEN_MULT:
                 return "check" if state.can_check else "fold"
-            # Sizing: 3BB + 1BB per limper already in the pot
+            # Sizing: OPEN_SIZE_BB + 1BB per limper already in the pot
             limpers  = max(0, (state.pot - bb - bb // 2) // bb)
-            size     = int((3 + limpers) * bb)
+            size     = int((OPEN_SIZE_BB + limpers) * bb)
             size     = max(size, state.min_raise)
             size     = min(size, state.chips + state.current_bet)
             return ("raise", size)
@@ -149,34 +159,33 @@ def _preflop(state, pos: int, bb: int) -> object:
 
     # ── Facing a 3-bet ─────────────────────────────────────────────
     if facing_3bet:
-        # Short stacks use a lower shove threshold (AKo = 0.583, covers AK/AQ/TT+)
-        shove_thresh = 0.55 if stack_bb < 25 else 0.65
+        shove_thresh = VS_3BET_SHOVE_SHORT if stack_bb < VS_3BET_SHORT_BB else VS_3BET_SHOVE_DEEP
         if strength >= shove_thresh:
-            if stack_bb < 25:
+            if stack_bb < VS_3BET_SHORT_BB:
                 return "allin"
-            size = min(int(state.to_call * 3),
+            size = min(int(state.to_call * VS_3BET_RAISE_MULT),
                     state.chips + state.current_bet)
             return ("raise", max(size, state.min_raise))
         # Speculative set-mine / suited connector in position
-        if (pos in (0, n - 1) and strength >= 0.12
-                and state.pot_odds < 0.28):
+        if (pos in (0, n - 1) and strength >= SPECULATIVE_STRENGTH
+                and state.pot_odds < SPECULATIVE_POT_ODDS):
             return "call"
         return "fold"
 
     # ── Facing a single raise ──────────────────────────────────────
     # Quant parallel: facing a raise = adverse selection signal.
     # Glosten-Milgrom: widen your required equity vs informed flow.
-    call_thresh = 0.25
-    if nits    > 0: call_thresh = 0.30    # nit's raise = tight range → need more
-    if maniacs > 0: call_thresh = 0.18   # maniac raises wide → call lighter
-    if stations > 0: call_thresh = 0.22
+    call_thresh = CALL_THRESH_DEFAULT
+    if nits    > 0: call_thresh = CALL_THRESH_VS_NIT
+    if maniacs > 0: call_thresh = CALL_THRESH_VS_MANIAC
+    if stations > 0: call_thresh = CALL_THRESH_VS_STATION
 
-    if strength >= call_thresh * 1.5 and stack_bb > 20:
+    if strength >= call_thresh * SQUEEZE_STRENGTH_MULT and stack_bb > MIN_STACK_TO_SQUEEZE:
         # 3-bet squeeze
         size = max(state.min_raise,
-                   min(int(state.to_call * 3),
+                   min(int(state.to_call * SQUEEZE_RAISE_MULT),
                     state.chips + state.current_bet))
         return ("raise", size)
-    if strength >= call_thresh and state.pot_odds < 0.35:
+    if strength >= call_thresh and state.pot_odds < POT_ODDS_CALL_MAX:
         return "call"
     return "fold"

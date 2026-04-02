@@ -7,6 +7,12 @@ This is the isolation boundary: test _postflop by passing mock SimResult.
 
 import random
 
+from poker.config import (
+    STATION_BET_EQUITY, MANIAC_TRAP_EQUITY, MANIAC_TRAP_EV_BOOST,
+    BLUFF_FREQ, BLUFF_DRAW_PREMIUM_MAX, BET_GATE_EQUITY,
+    POT_COMMITMENT_RATIO, BET_HALF_FRAC, BET_FULL_FRAC,
+)
+
 
 def _postflop(state, sim_result, pos: int, bb: int) -> object:
     """
@@ -38,7 +44,7 @@ def _postflop(state, sim_result, pos: int, bb: int) -> object:
     # ── Override Rule 1: never bluff a station ────────────────────
     # Stations call everything — bluffing is strictly -EV.
     # Remove bet options when station is present AND we're not value-betting.
-    if station_present and sim_result.risk_adj_equity < 0.52:
+    if station_present and sim_result.risk_adj_equity < STATION_BET_EQUITY:
         ev.pop('bet_half', None)
         ev.pop('bet_full', None)
 
@@ -46,31 +52,31 @@ def _postflop(state, sim_result, pos: int, bb: int) -> object:
     # Maniacs bet into us — check and let the pot grow naturally.
     # Equivalent to not showing our full order book, letting price discover.
     if (maniac_present
-            and sim_result.risk_adj_equity >= 0.65
+            and sim_result.risk_adj_equity >= MANIAC_TRAP_EQUITY
             and state.can_check
             and sim_result.street != 'river'):
         # Force 'check' to win by boosting its EV above any bet option
         best_bet = max(ev.get('bet_half', 0), ev.get('bet_full', 0), 0)
-        ev['check'] = max(ev.get('check', 0), best_bet * 1.15)
+        ev['check'] = max(ev.get('check', 0), best_bet * MANIAC_TRAP_EV_BOOST)
 
     # ── Override Rule 3: bluff gate ───────────────────────────────
     # All conditions must hold to allow a bluff bet.
     # Quant parallel: only deploy a low-Sharpe alpha signal when the
     # statistical edge justifies the variance — not by default.
     bluff_ok = (
-        n_active == 1                      # heads-up: one target
-        and pos == 0                       # BTN: in position, max info
-        and not station_present            # station won't fold
-        and sim_result.draw_premium < 0.02 # representing strength, not a draw
-        and random.random() < 0.25         # frequency cap: avoid being readable
+        n_active == 1                                          # heads-up: one target
+        and pos == 0                                           # BTN: in position, max info
+        and not station_present                                # station won't fold
+        and sim_result.draw_premium < BLUFF_DRAW_PREMIUM_MAX  # representing strength, not a draw
+        and random.random() < BLUFF_FREQ                       # frequency cap: avoid being readable
     )
-    if not bluff_ok and sim_result.risk_adj_equity < 0.42:
+    if not bluff_ok and sim_result.risk_adj_equity < BET_GATE_EQUITY:
         ev.pop('bet_half', None)
         ev.pop('bet_full', None)
 
     # ── Override Rule 4: pot commitment ───────────────────────────
     # If folding concedes > 60% of chips, call regardless of EV.
-    if state.to_call >= state.chips * 0.60:
+    if state.to_call >= state.chips * POT_COMMITMENT_RATIO:
         ev['call'] = max(ev.get('call', 0),
                          sim_result.continuation_value * (pot + state.to_call))
 
@@ -94,12 +100,12 @@ def _postflop(state, sim_result, pos: int, bb: int) -> object:
     if best_key == 'shove':    return 'allin'
 
     if best_key == 'bet_half':
-        bet = max(state.min_raise, int(pot * 0.50))
+        bet = max(state.min_raise, int(pot * BET_HALF_FRAC))
         bet = min(bet, state.chips + state.current_bet)
         return ('raise', bet)
 
     if best_key == 'bet_full':
-        bet = max(state.min_raise, int(pot * 1.00))
+        bet = max(state.min_raise, int(pot * BET_FULL_FRAC))
         bet = min(bet, state.chips + state.current_bet)
         return ('raise', bet)
 
