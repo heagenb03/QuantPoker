@@ -435,13 +435,13 @@ def run_unified_simulation(state: 'GameState', bb: int,
     # Fold probability compounds independently across all opponents
     # (all must fold for a bet to win the pot uncontested)
     p_all_fold = 1.0
-    for arch in archetypes:
-        p_all_fold *= _FOLD_TO_BET.get(arch, 0.40)
+    for pid in opp_pids:
+        p_all_fold *= _OPP.fold_to_bet_est(pid)
 
     # Probability at least one opponent bets when checked to
     p_no_bet = 1.0
-    for arch in archetypes:
-        p_no_bet *= (1.0 - _BET_WHEN_CHECKED.get(arch, 0.35))
+    for pid in opp_pids:
+        p_no_bet *= (1.0 - _OPP.bet_when_checked_est(pid))
     p_someone_bets = 1.0 - p_no_bet
 
     bet_half  = max(state.min_raise, int(pot * 0.50))
@@ -621,11 +621,20 @@ class _OpponentModel:
             'raises': 0,
             'calls':  0,
             'showdown': [],        # list of hole-card pairs seen at showdown
+            # Bayesian frequency tracking (Beta distribution parameters)
+            'ftb_alpha': 0.0,      # fold-to-bet successes
+            'ftb_beta':  0.0,      # fold-to-bet failures (call/raise)
+            'bwc_alpha': 0.0,      # bet-when-checked successes
+            'bwc_beta':  0.0,      # bet-when-checked failures (check)
+            'ftb_seeded': False,   # whether prior has been seeded
+            'bwc_seeded': False,
         })
         self._vpip_this_hand = set()
         self._pfr_this_hand  = set()
+        self._had_bet_this_street: bool = False
+        self._current_street: str = ''
 
-    def update(self, messages: list):
+    def update(self, messages: list) -> None:
         """Process only the NEW messages appended since last call."""
         for msg in messages:
             t = msg.get('type')
@@ -641,19 +650,55 @@ class _OpponentModel:
                     self._s[int(pid_str)]['hands'] += 1
                 self._vpip_this_hand = set()
                 self._pfr_this_hand  = set()
+                # Reset street tracking for new hand
+                self._had_bet_this_street = False
+                self._current_street = ''
 
             elif t == 'player_action':
                 pid    = msg['pid']
                 action = msg['action']
                 street = msg.get('street', '')
+
+                # Detect street transition → reset bet tracking
+                if street != self._current_street:
+                    self._had_bet_this_street = False
+                    self._current_street = street
+
                 if street == 'preflop':
                     if action in ('call', 'raise', 'allin'):
                         self._vpip_this_hand.add(pid)
                     if action in ('raise', 'allin'):
                         self._pfr_this_hand.add(pid)
+
+                # Bayesian updates — postflop only
+                if street in ('flop', 'turn', 'river'):
+                    if self._had_bet_this_street:
+                        # Opponent faces a bet
+                        if action == 'fold':
+                            self._reseed_priors(pid, 'ftb')
+                            self._s[pid]['ftb_alpha'] += 1
+                        elif action in ('call', 'raise', 'allin'):
+                            self._reseed_priors(pid, 'ftb')
+                            self._s[pid]['ftb_beta'] += 1
+                    else:
+                        # No bet yet this street
+                        if action in ('raise', 'bet', 'allin'):
+                            self._reseed_priors(pid, 'bwc')
+                            self._s[pid]['bwc_alpha'] += 1
+                        elif action == 'check':
+                            self._reseed_priors(pid, 'bwc')
+                            self._s[pid]['bwc_beta'] += 1
+
+                    # After processing, mark if a bet occurred
+                    if action in ('raise', 'bet', 'allin'):
+                        self._had_bet_this_street = True
+
+                # Global aggression tracking (all streets)
+                # Only count voluntary aggressive/passive actions — fold and check
+                # are neutral and must not inflate the call count (which deflates AF).
                 if action in ('raise', 'allin', 'bet'):
                     self._s[pid]['raises'] += 1
-                else:
+                elif action == 'call':
                     self._s[pid]['calls']  += 1
 
             elif t == 'showdown':
@@ -663,6 +708,67 @@ class _OpponentModel:
                     cards = info.get('cards', [])
                     if cards:
                         self._s[int(pid_str)]['showdown'].append(cards)
+
+    # ── Bayesian frequency accessors ─────────────────────────────
+
+    def _reseed_priors(self, pid: int, param: str) -> None:
+        """Seed Beta prior from archetype lookup on first observation.
+
+        Deferred until archetype is not 'unknown' — seeding from the
+        unknown prior (0.40/0.35) before hand 10 would lock in a stale
+        prior that persists even after the player reclassifies. Holding
+        off means the early observations accumulate without a prior, and
+        the prior seeds from the correct archetype the moment it stabilises.
+
+        Uses pseudocount of 5 so the prior is worth ~5 observations.
+        *param* is 'ftb' or 'bwc'.
+
+        NOTE: seeding (=) must happen before the caller increments (+=1).
+        Do not reorder those two lines.
+        """
+        seeded_key = f'{param}_seeded'
+        if self._s[pid][seeded_key]:
+            return
+        arch = self.archetype(pid)
+        if arch == 'unknown':
+            return   # defer until archetype stabilises (≥10 hands)
+        if param == 'ftb':
+            prior_mean = _FOLD_TO_BET.get(arch, 0.40)
+        else:
+            prior_mean = _BET_WHEN_CHECKED.get(arch, 0.35)
+        # Add pseudocount on top of any raw observations already accumulated
+        # while archetype was 'unknown'. This preserves early data rather
+        # than overwriting it.
+        pseudocount = 5.0
+        self._s[pid][f'{param}_alpha'] += prior_mean * pseudocount
+        self._s[pid][f'{param}_beta'] += (1.0 - prior_mean) * pseudocount
+        self._s[pid][seeded_key] = True
+
+    def fold_to_bet_est(self, pid: int) -> float:
+        """Bayesian estimate of how often *pid* folds to a postflop bet.
+
+        Pre-archetype-stabilisation (< 10 hands): raw observation counts
+        are used directly (no pseudocount prior yet).
+        Post-stabilisation: pseudocount prior has been added via _reseed_priors,
+        so the posterior mean is (prior + observations) / total.
+        Falls back to archetype lookup only when zero observations exist.
+        """
+        s = self._s[pid]
+        total = s['ftb_alpha'] + s['ftb_beta']
+        if total <= 0:
+            return _FOLD_TO_BET.get(self.archetype(pid), 0.40)
+        return s['ftb_alpha'] / total
+
+    def bet_when_checked_est(self, pid: int) -> float:
+        """Bayesian estimate of how often *pid* bets when checked to.
+
+        See fold_to_bet_est for the seeding/prior semantics.
+        """
+        s = self._s[pid]
+        total = s['bwc_alpha'] + s['bwc_beta']
+        if total <= 0:
+            return _BET_WHEN_CHECKED.get(self.archetype(pid), 0.35)
+        return s['bwc_alpha'] / total
 
     # ── Derived stats ──────────────────────────────────────────────
 
