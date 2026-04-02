@@ -1,6 +1,8 @@
 *.db
 *.wal
+
 tests/__pycache__/*
+poker/__pycache__/*
 __pycache__/*
 .pytest_cache/
 
