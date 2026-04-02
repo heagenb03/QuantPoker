@@ -6,7 +6,7 @@ Parameters are grouped by the module that uses them.
 """
 
 # ── Simulation ─────────────────────────────────────────────────────
-N_SIMS = 50000    # Monte Carlo rollouts per decision
+N_SIMS = 100000    # Monte Carlo rollouts per decision
 
 # CVaR tail fraction — fraction of worst outcomes averaged for tail risk
 CVAR_TAIL = 0.20              # 0.20 = worst 20%
